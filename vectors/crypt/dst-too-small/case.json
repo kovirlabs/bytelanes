@@ -1,0 +1,32 @@
+{
+  "format": 1,
+  "name": "crypt/dst-too-small",
+  "description": "dst one byte short: DstTooSmall, bytes = 40",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 39
+    }
+  ],
+  "vram": [],
+  "keys": [
+    {
+      "slot": 0,
+      "file": "key-0.bin"
+    }
+  ],
+  "expect": {
+    "status": "DstTooSmall",
+    "status_code": 6,
+    "cmd_index": 0,
+    "bytes": 40,
+    "crc": 0,
+    "output_buf": 2,
+    "output_offset": 0
+  }
+}

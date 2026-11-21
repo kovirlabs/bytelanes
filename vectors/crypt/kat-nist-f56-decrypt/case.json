@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "name": "crypt/kat-nist-f56-decrypt",
+  "description": "NIST SP 800-38A F.5.6 CTR-AES256 decrypt",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 64
+    }
+  ],
+  "vram": [],
+  "keys": [
+    {
+      "slot": 0,
+      "file": "key-0.bin"
+    }
+  ],
+  "expect": {
+    "status": "Ok",
+    "status_code": 0,
+    "cmd_index": 0,
+    "bytes": 64,
+    "crc": 1926286603,
+    "output_buf": 2,
+    "output_offset": 0,
+    "output": "expected.bin"
+  }
+}

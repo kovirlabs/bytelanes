@@ -1,0 +1,38 @@
+{
+  "format": 1,
+  "name": "program/unchained-steps",
+  "description": "commands without CHAIN run in order; the completion reports the last",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 64
+    }
+  ],
+  "vram": [
+    {
+      "buf": 16,
+      "len": 4
+    }
+  ],
+  "keys": [
+    {
+      "slot": 0,
+      "file": "key-0.bin"
+    }
+  ],
+  "expect": {
+    "status": "Ok",
+    "status_code": 0,
+    "cmd_index": 1,
+    "bytes": 64,
+    "crc": 2274594724,
+    "output_buf": 2,
+    "output_offset": 0,
+    "output": "expected.bin"
+  }
+}

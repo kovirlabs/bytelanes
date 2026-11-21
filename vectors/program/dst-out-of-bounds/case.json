@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "name": "program/dst-out-of-bounds",
+  "description": "dst extent reaches past its buffer: OutOfBounds even though the result would fit",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 4
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "OutOfBounds",
+    "status_code": 5,
+    "cmd_index": 0,
+    "bytes": 0,
+    "crc": 0,
+    "output_buf": 2,
+    "output_offset": 0
+  }
+}
