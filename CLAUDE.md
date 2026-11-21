@@ -9,8 +9,8 @@ repos.
 
 Read `../paralanes/docs/PLAN.md` and `../paralanes/docs/SPEC.md` before any
 change. The plan sets milestone order and which machine does what. The spec is
-the technical source of truth; its `cf-` crate names are placeholders, mapped
-to this repo's crates in the table below. Where plan and spec disagree, the
+the technical source of truth and uses the real crate names; the earlier
+`cf-` placeholder names appear in the table below for reference. Where plan and spec disagree, the
 plan is current; note the conflict in your status file.
 
 > DRAFT. Items marked TBD are open decisions for Evan.
@@ -97,6 +97,10 @@ M5) must not run at the same time as `stagelanes` pipeline benchmarks (M2, M6).
   on the GPU that the receiver checks.
 - `bytelanes-abi` stays `#![no_std]`.
 - **No `unsafe`** in this repo; every crate has `#![forbid(unsafe_code)]`.
+- **CPU reference speed comes from existing crates.** CRC32C uses `crc32c`;
+  AES-256-CTR uses RustCrypto's `aes` and `ctr`. They pick the hardware
+  instructions at runtime, so the atlas compares the GPU against a fast CPU.
+  Do not depend on `stagelanes`; look up the crates' current docs first.
 
 ## Status files
 
@@ -136,6 +140,3 @@ Only Evan merges, tags and publishes.
 
 - GitHub owner for the four repos
 - Ryzen 7 model and RX 570 memory size, for the atlas
-- CPU CRC32C and AES-256-CTR: the spec puts these intrinsics in `cf-arch`, now
-  `stagelanes-arch`, but `bytelanes` depends on nothing above it. Use existing
-  crates, or a small `platform` module here?
