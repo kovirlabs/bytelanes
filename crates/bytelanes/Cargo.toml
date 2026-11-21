@@ -9,3 +9,8 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+aes = "0.9.4"
+crc32c = "0.6.9"
+ctr = "0.10.1"

@@ -9,3 +9,9 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+zerocopy = { version = "0.8.64", default-features = false, features = ["derive"] }
+
+[dev-dependencies]
+proptest = "1.12.0"
