@@ -1,0 +1,11 @@
+[package]
+name = "bytelanes-wgpu"
+description = "GPU backend for bytelanes through wgpu (Vulkan, DX12, Metal)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "bytelanes-bench"
+description = "GPU versus CPU benchmark per op across input sizes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "bytelanes-abi"
+description = "Op format for bytelanes: channel program wire format and status codes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,11 @@
+[package]
+name = "bytelanes"
+description = "Bulk data ops with a CPU reference backend and a ChannelBackend trait"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
