@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### bytelanes-wgpu
+
+- `WgpuBackend`: a `ChannelBackend` and `Buffers` implementation on wgpu 30
+  that reproduces the CPU reference byte for byte. Checksum (CRC-32C, chunk
+  CRCs combined on the GPU), Encrypt and Decrypt (AES-256-CTR), Filter (all
+  six element types through integer order keys; count, scan and scatter
+  passes). Every result's CRC-32C is computed on the GPU. Programs run in
+  order on a worker thread; `submit` and `poll` do not wait for the GPU.
+- `BufferStrategy` trait and `CopyingStrategy`, the seam for a
+  unified-memory strategy.
+- `hardware_adapters()`, `adapters()`, and the `adapters` example.
+- Tests: all golden vectors and 10,000 random cases per op on every hardware
+  adapter; large-input tests (`--ignored`).
+- `bytelanes-wgpu` needs Rust 1.87 (wgpu 30); the other crates stay on 1.85.
+
 ## 0.0.1 (unreleased)
 
 First version, published to hold the crate names. No GPU backend and no
