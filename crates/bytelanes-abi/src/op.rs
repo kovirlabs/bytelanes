@@ -36,6 +36,25 @@
 /// If `dst` is shorter than the result, the command fails with
 /// [`Status::DstTooSmall`](crate::Status::DstTooSmall) and the completion's
 /// `bytes` is the size the result needs; `dst` contents are then unspecified.
+///
+/// # Errors and their order
+///
+/// A program that fails [`ChannelProgram::validate`](crate::ChannelProgram::validate)
+/// completes with `InvalidProgram` and the index the validation names.
+/// Otherwise commands run in order and the first failing check is reported,
+/// with the command's index. For each command the checks run in this order,
+/// so every backend reports the same status for the same program:
+///
+/// 1. `UnsupportedOp`: the op is reserved or the backend lacks it.
+/// 2. `UnsupportedExtent`: the backend lacks the `src` or `dst` kind.
+/// 3. `UnknownBuffer`, then `OutOfBounds`: for `src` (unless it is fed by a
+///    chain), then for `dst`.
+/// 4. `UnknownKey`: a crypt command's key slot is empty.
+/// 5. `InvalidLength`: a `Filter` input is not a whole number of elements or
+///    has more than 2^32 of them, or a result would exceed `u32::MAX` bytes.
+/// 6. `DstTooSmall`.
+///
+/// Commands before the failing one may already have written their `dst`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u16)]
 pub enum Op {
