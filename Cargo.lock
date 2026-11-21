@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "bytelanes"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "aes",
  "bytelanes-abi",
@@ -92,7 +92,7 @@ dependencies = [
 
 [[package]]
 name = "bytelanes-abi"
-version = "0.0.0"
+version = "0.0.1"
 dependencies = [
  "proptest",
  "zerocopy",
@@ -100,11 +100,11 @@ dependencies = [
 
 [[package]]
 name = "bytelanes-bench"
-version = "0.0.0"
+version = "0.0.1"
 
 [[package]]
 name = "bytelanes-wgpu"
-version = "0.0.0"
+version = "0.0.1"
 
 [[package]]
 name = "bytes"
