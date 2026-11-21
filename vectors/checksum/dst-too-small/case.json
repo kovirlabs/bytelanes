@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "name": "checksum/dst-too-small",
+  "description": "3-byte dst: DstTooSmall, bytes = 4",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 3
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "DstTooSmall",
+    "status_code": 6,
+    "cmd_index": 0,
+    "bytes": 4,
+    "crc": 0,
+    "output_buf": 2,
+    "output_offset": 0
+  }
+}

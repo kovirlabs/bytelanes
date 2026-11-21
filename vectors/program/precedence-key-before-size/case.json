@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "name": "program/precedence-key-before-size",
+  "description": "empty key slot and short dst: UnknownKey wins",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 8
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "UnknownKey",
+    "status_code": 8,
+    "cmd_index": 0,
+    "bytes": 0,
+    "crc": 0,
+    "output_buf": 2,
+    "output_offset": 0
+  }
+}

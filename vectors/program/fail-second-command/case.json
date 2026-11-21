@@ -1,0 +1,37 @@
+{
+  "format": 1,
+  "name": "program/fail-second-command",
+  "description": "second command's dst holds 1 of 16 indices: DstTooSmall at index 1",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 4
+    }
+  ],
+  "vram": [
+    {
+      "buf": 16,
+      "len": 64
+    }
+  ],
+  "keys": [
+    {
+      "slot": 0,
+      "file": "key-0.bin"
+    }
+  ],
+  "expect": {
+    "status": "DstTooSmall",
+    "status_code": 6,
+    "cmd_index": 1,
+    "bytes": 64,
+    "crc": 0,
+    "output_buf": 2,
+    "output_offset": 0
+  }
+}

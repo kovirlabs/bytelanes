@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "name": "filter/all-match",
+  "description": "every row matches",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 400
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "Ok",
+    "status_code": 0,
+    "cmd_index": 0,
+    "bytes": 400,
+    "crc": 1942545190,
+    "output_buf": 2,
+    "output_offset": 0,
+    "output": "expected.bin"
+  }
+}

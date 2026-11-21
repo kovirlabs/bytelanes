@@ -1,0 +1,32 @@
+{
+  "format": 1,
+  "name": "crypt/unknown-key",
+  "description": "key slot 0 is empty (the case loads slot 9): UnknownKey",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 32
+    }
+  ],
+  "vram": [],
+  "keys": [
+    {
+      "slot": 9,
+      "file": "key-9.bin"
+    }
+  ],
+  "expect": {
+    "status": "UnknownKey",
+    "status_code": 8,
+    "cmd_index": 0,
+    "bytes": 0,
+    "crc": 0,
+    "output_buf": 2,
+    "output_offset": 0
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "name": "filter/invalid-length",
+  "description": "10 bytes is not a whole number of u32s: InvalidLength",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 40
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "InvalidLength",
+    "status_code": 7,
+    "cmd_index": 0,
+    "bytes": 0,
+    "crc": 0,
+    "output_buf": 2,
+    "output_offset": 0
+  }
+}

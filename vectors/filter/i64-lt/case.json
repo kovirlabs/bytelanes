@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "name": "filter/i64-lt",
+  "description": "1000 rows mixing random values, repeats and specials",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 4000
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "Ok",
+    "status_code": 0,
+    "cmd_index": 0,
+    "bytes": 2464,
+    "crc": 97706360,
+    "output_buf": 2,
+    "output_offset": 0,
+    "output": "expected.bin"
+  }
+}

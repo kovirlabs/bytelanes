@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "name": "invalid/reserved-byte",
+  "description": "non-zero reserved header byte: InvalidProgram at NO_INDEX",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 64
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "InvalidProgram",
+    "status_code": 1,
+    "cmd_index": 65535,
+    "bytes": 0,
+    "crc": 0,
+    "output_buf": 2,
+    "output_offset": 0
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "format": 1,
+  "name": "program/chain-uses-result-length",
+  "description": "a chained src is the previous result's bytes, not the full extent",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 4
+    }
+  ],
+  "vram": [
+    {
+      "buf": 16,
+      "len": 4096
+    }
+  ],
+  "keys": [],
+  "expect": {
+    "status": "Ok",
+    "status_code": 0,
+    "cmd_index": 1,
+    "bytes": 4,
+    "crc": 1157763604,
+    "output_buf": 2,
+    "output_offset": 0,
+    "output": "expected.bin"
+  }
+}

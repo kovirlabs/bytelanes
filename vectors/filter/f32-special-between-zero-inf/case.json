@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "name": "filter/f32-special-between-zero-inf",
+  "description": "IEEE 754: NaN matches only Ne; -0.0 equals 0.0",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 40
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "Ok",
+    "status_code": 0,
+    "cmd_index": 0,
+    "bytes": 24,
+    "crc": 1491835314,
+    "output_buf": 2,
+    "output_offset": 0,
+    "output": "expected.bin"
+  }
+}

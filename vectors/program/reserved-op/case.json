@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "name": "program/reserved-op",
+  "description": "Compress has no semantics yet: UnsupportedOp",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 16
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "UnsupportedOp",
+    "status_code": 2,
+    "cmd_index": 0,
+    "bytes": 0,
+    "crc": 0,
+    "output_buf": 2,
+    "output_offset": 0
+  }
+}
