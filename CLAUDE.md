@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # bytelanes
 
 Rust library of bulk data operations (checksum, filter, decrypt; later
@@ -37,6 +41,15 @@ development; switch to published versions only when Evan says so.
 | `bytelanes-wgpu` | `cf-backend-wgpu` | lib | WGSL compute shaders through wgpu; `BufferStrategy` trait with copying and unified-memory implementations | no |
 | `bytelanes-bench` | `cf-bench` | bin | GPU versus CPU benchmark per op across input sizes; feeds the atlas | no |
 | `vectors/` | `vectors/` | data | Golden inputs and expected outputs per op | n/a |
+
+Crates live in `crates/<name>/`. The workspace pulls in every crate under
+`crates/*`, so a new directory there becomes a member automatically. Version,
+edition (2024), MSRV (1.85), licence and `publish = false` are set once in
+`[workspace.package]` in the root `Cargo.toml`, so a version bump is one edit
+there. Every crate is still a stub: `bytelanes-bench` exits with code 2.
+
+`PLAN.md`, `SPEC.md`, `machines.md` and `status` are gitignored here on
+purpose. Read them in `../paralanes`; don't copy them into this repo.
 
 ## Milestones in this repo
 
@@ -128,7 +141,16 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo +nightly miri test -p bytelanes-abi -p bytelanes
+
+# one crate / one test
+cargo test -p bytelanes
+cargo test -p bytelanes <test_name_substring>
 ```
+
+CI (`.github/workflows/ci.yml`) runs `cargo fmt --all --check`, clippy and tests
+on Ubuntu, Windows and macOS, plus miri on Ubuntu. The workspace sets
+`missing_docs = "warn"`, and clippy runs with `-D warnings`, so any public item
+without a doc comment fails clippy.
 
 Benchmark output goes to `../paralanes/atlas/runs/<machine>/<YYYY-MM-DD>-<op>.json`;
 do not edit run files after they are committed.
