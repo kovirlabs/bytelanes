@@ -43,7 +43,7 @@ development; switch to published versions only when Evan says so.
 | # | Milestone | Agent |
 | --- | --- | --- |
 | M1 | Op format and CPU reference: Checksum, Filter, Decrypt; golden vectors; 0.0.1 prepared | A (Dell) |
-| M3 | GPU ops on Windows with the Radeon RX 570 | B (Ryzen) |
+| M3 | GPU ops on Windows with the Radeon RX 7800 XT | B (Ryzen) |
 | M4 | GPU ops on Metal, plus a unified-memory buffer strategy | C (MacBook) |
 | M5 | Benchmark runs for the atlas (atlas lives in `paralanes`). Release 1: `bytelanes` 0.1 | B, C |
 | M7 | FFT op, built for `diagsteno` | A builds; B and C check |
@@ -59,7 +59,7 @@ you were given is not assigned to your machine in
 | Agent | Machine | OS |
 | --- | --- | --- |
 | A | Dell PowerEdge, 2x Xeon Silver (10 cores each), no GPU | Linux guest on Proxmox, cores pinned, both NUMA nodes exposed |
-| B | Desktop, Ryzen 7 (model TBD) on AM5, Radeon RX 570 (4 or 8 GB, TBD) | Windows |
+| B | Desktop, Ryzen 7 5700X (8 cores, AM4 Mini-ITX), Radeon RX 7800 XT 16 GB on PCIe 3.0 x16, 1 GbE (details: `docs/machines.md` in paralanes) | Windows |
 | C | MacBook Pro, M5 Pro, 24 GB unified memory | macOS, AArch64 |
 
 Ownership inside this repo: agent B owns the ops and WGSL shaders in
@@ -77,7 +77,9 @@ M5) must not run at the same time as `stagelanes` pipeline benchmarks (M2, M6).
 - **No unmeasured numbers.** A performance figure appears in a README, the
   atlas or a status file only with the run file that produced it. Every run
   file records machine, OS, kernel or build number, GPU driver version, wgpu
-  backend, Rust version and the exact command.
+  backend, GPU host link (PCIe generation and width, or unified memory),
+  network link type and speed for runs across machines, Rust version and the
+  exact command.
 - **A negative result is a result.** Publish it plainly.
 - **Data rule.** Use generated data or data Evan confirms he owns. Never
   commit machine data from an employer or customer.
@@ -114,7 +116,7 @@ file in `../paralanes/docs/status/`.
 ## Branches
 
 - `main` is Evan's. Never push to it.
-- Work on `m<n>-<short-topic>` (for example `m3-rx570-ops`). One branch per
+- Work on `m<n>-<short-topic>` (for example `m3-rx7800-ops`). One branch per
   milestone per repo.
 - Small commits, one logical change each. Run fmt, clippy and tests before
   each commit.
@@ -139,4 +141,3 @@ Only Evan merges, tags and publishes.
 ## Open decisions (TBD)
 
 - GitHub owner for the four repos
-- Ryzen 7 model and RX 570 memory size, for the atlas
