@@ -3,8 +3,7 @@ name = "bytelanes-wgpu"
 description = "GPU backend for bytelanes through wgpu (Vulkan, DX12, Metal)"
 version.workspace = true
 edition.workspace = true
-# wgpu 30 needs Rust 1.87; the rest of the workspace stays on 1.85.
-rust-version = "1.87"
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
