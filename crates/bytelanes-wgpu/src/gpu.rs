@@ -80,7 +80,7 @@ impl Gpu {
         let limits = adapter.limits();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("bytelanes"),
-            required_features: wgpu::Features::empty(),
+            required_features: strategy.required_features(),
             required_limits: limits.clone(),
             experimental_features: wgpu::ExperimentalFeatures::default(),
             memory_hints: wgpu::MemoryHints::Performance,
@@ -227,15 +227,7 @@ impl Gpu {
 
     /// A zero-filled buffer for `len` logical bytes.
     pub(crate) fn zeroed(&self, label: &str, len: u64) -> wgpu::Buffer {
-        // New wgpu buffers are zero-initialised.
-        self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size: padded(len),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
+        self.strategy.alloc(&self.device, label, padded(len))
     }
 
     /// Whether a buffer for `len` bytes fits this device's limits.

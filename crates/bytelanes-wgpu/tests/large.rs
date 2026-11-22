@@ -9,7 +9,6 @@
 
 use bytelanes::abi::{BufId, ChannelCmd, ChannelProgram, CmpOp, Extent, FilterSpec};
 use bytelanes::conformance::{Case, SplitMix64, expect_from_cpu, run_case};
-use bytelanes_wgpu::WgpuBackend;
 
 mod common;
 
@@ -46,15 +45,54 @@ fn case(name: &str, cmds: &[ChannelCmd], input: Vec<u8>, out_len: u64, vram: u64
 }
 
 fn run_all(cases: &[Case]) {
-    for a in &common::adapters() {
-        let backend = WgpuBackend::new(a).expect("open adapter");
+    for backend in common::backends() {
         for c in cases {
             backend.clear();
             let r = run_case(&backend, c);
-            eprintln!("{:?} {}: {:?}", a.get_info().backend, c.name, r);
+            eprintln!(
+                "{:?} {} {}: {:?}",
+                backend.adapter_info().backend,
+                backend.strategy_name(),
+                c.name,
+                r
+            );
             assert!(r.is_ok(), "{}: {:?}", c.name, r);
         }
     }
+}
+
+/// Lengths of 2^29 bytes and more use the top entries of the CRC power
+/// table (`x^(8 * 2^29)` and up), which no smaller case reaches. Those
+/// entries were once wrong, giving a wrong CRC-32C from 512 MiB on.
+#[test]
+#[ignore = "large: run with --ignored"]
+fn checksum_and_decrypt_past_512_mib() {
+    let n = 600 * MIB as u64;
+    run_all(&[
+        case(
+            "checksum 600 MiB at offset 3",
+            &[ChannelCmd::checksum(
+                Extent::host(IN, 3, n - 3),
+                Extent::host(OUT, 0, 4),
+            )],
+            data(n as usize, 5),
+            4,
+            0,
+        ),
+        // The completion CRC of a 600 MiB result takes the same path.
+        case(
+            "decrypt 600 MiB",
+            &[ChannelCmd::decrypt(
+                Extent::host(IN, 0, n),
+                Extent::host(OUT, 0, n),
+                KEY,
+                [3; 16],
+            )],
+            data(n as usize, 6),
+            n,
+            0,
+        ),
+    ]);
 }
 
 #[test]

@@ -2,9 +2,9 @@
 //!
 //! This trait is the seam between the ops (agent B) and the memory model:
 //! [`CopyingStrategy`] stages every transfer through a copy, which is what a
-//! discrete GPU on PCIe needs. A unified-memory strategy (agent C, M4) can
-//! hand the GPU host-visible memory instead. The ops only ever see a
-//! `wgpu::Buffer` with the input at offset 0.
+//! discrete GPU on PCIe needs. [`UnifiedMemoryStrategy`](crate::UnifiedMemoryStrategy)
+//! (agent C, M4) hands the GPU memory the CPU maps directly instead. The ops
+//! only ever see a `wgpu::Buffer` with the input at offset 0.
 
 use std::sync::mpsc;
 
@@ -12,6 +12,28 @@ use std::sync::mpsc;
 pub trait BufferStrategy: Send + Sync {
     /// Short name, recorded with results.
     fn name(&self) -> &'static str;
+
+    /// Device features this strategy needs. The backend requests them when
+    /// it opens the device, so opening fails on an adapter without them.
+    fn required_features(&self) -> wgpu::Features {
+        wgpu::Features::empty()
+    }
+
+    /// A zero-filled buffer of `size` bytes (a multiple of 4) with at least
+    /// `STORAGE | COPY_SRC | COPY_DST` usage. Every op result and device
+    /// (`Vram`) buffer comes from here, so a strategy can choose memory that
+    /// its [`download`](Self::download) reads without a copy.
+    fn alloc(&self, device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
+        // New wgpu buffers are zero-initialised.
+        device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        })
+    }
 
     /// A buffer holding `data` at offset 0, at least `capacity` bytes long
     /// (`capacity >= data.len()`, a multiple of 4), with usage
