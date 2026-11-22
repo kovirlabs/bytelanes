@@ -60,6 +60,26 @@ tests print `SKIPPED` and pass.
 Checked so far on one GPU: AMD Radeon RX 7800 XT, Windows, Vulkan and DX12.
 Metal (MacBook) is M4.
 
+### GPU CI
+
+GitHub's hosted runners have no GPU, so CI's `gpu` job runs on a
+self-hosted runner: the Ryzen desktop with the RX 7800 XT (labels
+`self-hosted, Windows, X64, gpu`). It runs the conformance tests on every
+pull request from this repo, and the large-input tests on pushes to `main`
+and manual runs. It sets `BYTELANES_REQUIRE_BACKENDS=vulkan,dx12`, so a
+missing driver or adapter fails the job instead of skipping it.
+
+The runner lives in `C:\Users\gress\actions-runner\bytelanes` and starts at
+logon from the scheduled task `GitHub runner bytelanes-gpu` (log:
+`runner.log` there). Jobs wait while the machine is off or logged out.
+Stop the runner during pipeline or GPU benchmarks on that machine, so a CI
+job can't disturb a measurement:
+
+```powershell
+Stop-ScheduledTask 'GitHub runner bytelanes-gpu'; Stop-Process -Name Runner.Listener,Runner.Worker -ErrorAction SilentlyContinue
+Start-ScheduledTask 'GitHub runner bytelanes-gpu'   # afterwards
+```
+
 ## Licence
 
 Apache License 2.0. See [LICENSE](LICENSE).
