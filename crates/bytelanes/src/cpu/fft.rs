@@ -192,7 +192,7 @@ pub fn fft(log2n: u8, src: &[u8], out: &mut Vec<u8>) -> Result<(), Status> {
         return Err(Status::InvalidLength);
     }
     let frame_bytes = (1usize << log2n) * 4;
-    if src.len() % frame_bytes != 0 {
+    if !src.len().is_multiple_of(frame_bytes) {
         return Err(Status::InvalidLength);
     }
     let mut samples = Vec::with_capacity(1 << log2n);
@@ -202,8 +202,10 @@ pub fn fft(log2n: u8, src: &[u8], out: &mut Vec<u8>) -> Result<(), Status> {
         samples.clear();
         samples.extend(
             frame
-                .chunks_exact(4)
-                .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|&b| i32::from_le_bytes(b)),
         );
         bins.clear();
         fft_frame(log2n, &samples, &mut bins);

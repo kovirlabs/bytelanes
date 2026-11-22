@@ -44,10 +44,10 @@ development; switch to published versions only when Evan says so.
 
 Crates live in `crates/<name>/`. The workspace pulls in every crate under
 `crates/*`, so a new directory there becomes a member automatically. Version,
-edition (2024), MSRV (1.85), licence and `publish = false` are set once in
-`[workspace.package]` in the root `Cargo.toml`, so a version bump is one edit
-there. `bytelanes-bench` is still a stub (exits with code 2). `bytelanes-wgpu`
-sets its own `rust-version = "1.87"` because wgpu 30 needs it.
+edition (2024), MSRV (1.89, set by `aes` 0.9; CI's `msrv` job checks it), licence and
+`publish = false` are set once in `[workspace.package]` in the root
+`Cargo.toml`, so a version bump is one edit there. `bytelanes-bench` is still
+a stub (exits with code 2).
 
 `bytelanes-wgpu` layout: `src/shaders/*.wgsl` (each kernel shader gets
 `bytes.wgsl` appended for byte loads and 2D dispatch indexing), `gpu.rs`

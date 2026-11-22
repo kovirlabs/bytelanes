@@ -9,7 +9,9 @@
 
 use bytelanes::abi::{BufId, ChannelCmd, ChannelProgram, CmpOp, Extent, FilterSpec};
 use bytelanes::conformance::{Case, SplitMix64, expect_from_cpu, run_case};
-use bytelanes_wgpu::{WgpuBackend, hardware_adapters};
+use bytelanes_wgpu::WgpuBackend;
+
+mod common;
 
 const MIB: usize = 1 << 20;
 const IN: BufId = BufId(1);
@@ -44,11 +46,7 @@ fn case(name: &str, cmds: &[ChannelCmd], input: Vec<u8>, out_len: u64, vram: u64
 }
 
 fn run_all(cases: &[Case]) {
-    let adapters = hardware_adapters();
-    if adapters.is_empty() {
-        eprintln!("SKIPPED: no hardware GPU adapter found");
-    }
-    for a in &adapters {
+    for a in &common::adapters() {
         let backend = WgpuBackend::new(a).expect("open adapter");
         for c in cases {
             backend.clear();
@@ -122,7 +120,9 @@ fn filter_70m_rows() {
         .collect();
     let f64_rows = 8_000_000u64;
     let col64: Vec<u8> = data(f64_rows as usize * 8, 5)
-        .chunks_exact(8)
+        .as_chunks::<8>()
+        .0
+        .iter()
         .flat_map(|c| {
             let x = f64::from(i32::from_le_bytes([c[0], c[1], c[2], c[3]])) / 7.0;
             x.to_le_bytes()

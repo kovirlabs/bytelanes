@@ -43,7 +43,7 @@ pub const MAX_FILTER_ROWS: u64 = 1 << 32;
 /// unchanged.
 pub fn filter(spec: &FilterSpec, src: &[u8], out: &mut Vec<u32>) -> Result<(), Status> {
     let w = spec.elem.width();
-    if src.len() % w != 0 || (src.len() / w) as u64 > MAX_FILTER_ROWS {
+    if !src.len().is_multiple_of(w) || (src.len() / w) as u64 > MAX_FILTER_ROWS {
         return Err(Status::InvalidLength);
     }
     let (a, b) = (spec.a, spec.b);
@@ -106,9 +106,10 @@ fn scan_with<const W: usize, T: Copy>(
     out: &mut Vec<u32>,
     pred: impl Fn(T) -> bool,
 ) {
-    for (i, chunk) in src.chunks_exact(W).enumerate() {
-        let mut raw = [0u8; W];
-        raw.copy_from_slice(chunk);
+    // `filter` has checked that `src` is a whole number of elements, so the
+    // remainder is empty.
+    let (elems, _) = src.as_chunks::<W>();
+    for (i, &raw) in elems.iter().enumerate() {
         if pred(decode(raw)) {
             // Row count is checked against MAX_FILTER_ROWS, so i fits in u32.
             out.push(i as u32);

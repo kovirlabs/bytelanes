@@ -3,24 +3,24 @@
 //! Metal on macOS). `WGPU_BACKEND=vulkan` or `=dx12` narrows the set.
 //! `BYTELANES_CASES=<n>` changes the number of random cases per op.
 //!
-//! Machines without a GPU (CI) find no adapter and skip, saying so.
+//! Machines without a GPU (hosted CI) find no adapter and skip, saying so.
+//! `BYTELANES_REQUIRE_BACKENDS=vulkan,dx12` turns a missing adapter into a
+//! failure (the GPU runner sets it).
+
+mod common;
 
 use std::time::Instant;
 
 use bytelanes::ChannelBackend;
 use bytelanes::abi::Op;
 use bytelanes::conformance::{self, run_case};
-use bytelanes_wgpu::{WgpuBackend, hardware_adapters};
+use bytelanes_wgpu::WgpuBackend;
 
 fn backends() -> Vec<WgpuBackend> {
-    let found: Vec<WgpuBackend> = hardware_adapters()
+    common::adapters()
         .iter()
         .map(|a| WgpuBackend::new(a).expect("open adapter"))
-        .collect();
-    if found.is_empty() {
-        eprintln!("SKIPPED: no hardware GPU adapter found");
-    }
-    found
+        .collect()
 }
 
 fn describe(b: &WgpuBackend) -> String {

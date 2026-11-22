@@ -393,8 +393,10 @@ impl Gpu {
         let out = self.zeroed("aes out", input.len);
         if blocks > 0 {
             let ivw: Vec<u32> = iv
-                .chunks_exact(4)
-                .map(|c| u32::from_be_bytes([c[0], c[1], c[2], c[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|&c| u32::from_be_bytes(c))
                 .collect();
             let params = self.uniform(&[
                 input.off as u32,

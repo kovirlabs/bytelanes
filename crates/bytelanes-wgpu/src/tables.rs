@@ -118,8 +118,8 @@ pub(crate) fn aes256_round_keys(key: &[u8; 32], sbox: &[u8; 256]) -> [u32; 60] {
         ])
     };
     let mut rk = [0u32; 60];
-    for (i, chunk) in key.chunks_exact(4).enumerate() {
-        rk[i] = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+    for (i, &chunk) in key.as_chunks::<4>().0.iter().enumerate() {
+        rk[i] = u32::from_be_bytes(chunk);
     }
     let mut rcon = 1u8;
     for i in 8..60 {

@@ -36,10 +36,17 @@
 - `hardware_adapters()`, `adapters()`, and the `adapters` example.
 - Tests: all golden vectors and 10,000 random cases per op on every hardware
   adapter; large-input tests (`--ignored`).
-- `bytelanes-wgpu` needs Rust 1.87 (wgpu 30); the other crates stay on 1.85.
 - Until a WGSL FFT exists, `WgpuBackend` does not list `Fft` in its
   capabilities and completes it with `UnsupportedOp`; its golden-vector test
   skips cases that use ops the backend does not list.
+
+### Workspace
+
+- MSRV raised from 1.85 to 1.89 for every crate. 1.85 was never accurate:
+  `aes` 0.9.4 needs 1.89, `proptest` 1.12 needs 1.88 and wgpu 30 needs 1.87.
+  A new CI job (`msrv`) builds the workspace with 1.89.
+- CI: a `gpu` job runs the GPU conformance tests on a self-hosted runner with
+  the Radeon RX 7800 XT, through both Vulkan and DX12.
 
 ## 0.0.1 (unreleased)
 

@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -26,6 +27,17 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  msrv:
+    name: msrv (1.89)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets
+
   miri:
     name: miri
     runs-on: ubuntu-latest
@@ -35,3 +47,24 @@ jobs:
         with:
           components: miri
       - run: cargo miri test -p bytelanes-abi -p bytelanes
+
+  # Self-hosted: the Ryzen desktop with the Radeon RX 7800 XT (agent B's
+  # machine). Uses the Rust toolchain installed there. Runs only for this
+  # repo's own branches, never for forks. The runner must be stopped while
+  # pipeline benchmarks run on that machine (see README, "GPU CI").
+  gpu:
+    name: gpu (RX 7800 XT, Vulkan and DX12)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Windows, X64, gpu]
+    timeout-minutes: 60
+    env:
+      # A missing driver or adapter fails the job instead of skipping.
+      BYTELANES_REQUIRE_BACKENDS: vulkan,dx12
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo --version
+      - name: golden vectors and 10,000 random cases per op
+        run: cargo test -p bytelanes-wgpu --release --test conformance -- --nocapture
+      - name: large inputs (push to main and manual runs only)
+        if: github.event_name != 'pull_request'
+        run: cargo test -p bytelanes-wgpu --release --test large -- --ignored --nocapture
