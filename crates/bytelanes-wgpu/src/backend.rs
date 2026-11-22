@@ -127,6 +127,9 @@ impl WgpuBackend {
                         s.health.store(DEGRADED, Ordering::Relaxed);
                         Completion::error(tag, NO_INDEX, Status::DeviceError, 0)
                     });
+                    // Every command of the program has been submitted:
+                    // its pooled buffers can go back.
+                    s.gpu.recycle();
                     s.done().push_back(c);
                 }
             })
@@ -231,7 +234,7 @@ impl Buffers for WgpuBackend {
         if !gpu.fits(len) {
             return Err(Status::DeviceError);
         }
-        let b = gpu.zeroed("vram", len);
+        let b = gpu.fresh_zeroed("vram", len);
         self.shared
             .state()
             .vram

@@ -9,6 +9,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 
+use crate::pool::{DevicePool, size_class};
+
 /// One range to read back: `dst.len()` bytes of `buffer` from `offset`.
 pub struct Readback<'a> {
     /// The GPU buffer to read.
@@ -62,6 +64,13 @@ pub trait BufferStrategy: Send + Sync {
         }
         Ok(())
     }
+
+    /// Hands back a buffer `upload` returned, once every command using it
+    /// has been submitted. A strategy may reuse it for a later upload (queue
+    /// order makes that safe); the default drops it.
+    fn recycle(&self, buffer: wgpu::Buffer) {
+        drop(buffer);
+    }
 }
 
 /// Smallest readback staging buffer: small results share one size class.
@@ -70,15 +79,16 @@ const MIN_STAGING: u64 = 64 << 10;
 const MAX_POOLED: usize = 4;
 
 /// `data` into `buffer` at offset 0 through `queue.write_buffer`, which
-/// needs whole 4-byte words: the tail word is zero-padded.
-fn write_via_queue(queue: &wgpu::Queue, buffer: &wgpu::Buffer, data: &[u8]) {
+/// needs whole 4-byte words, with zeros after it up to `capacity` (the
+/// buffer may be reused and hold old bytes).
+fn write_via_queue(queue: &wgpu::Queue, buffer: &wgpu::Buffer, data: &[u8], capacity: u64) {
     let n = data.len();
     let whole = n & !3;
     if whole > 0 {
         queue.write_buffer(buffer, 0, &data[..whole]);
     }
-    if whole < n {
-        let mut tail = [0u8; 4];
+    let mut tail = vec![0u8; (capacity as usize).saturating_sub(whole)];
+    if !tail.is_empty() {
         tail[..n - whole].copy_from_slice(&data[whole..]);
         queue.write_buffer(buffer, whole as u64, &tail);
     }
@@ -101,6 +111,7 @@ struct UploadStaging {
 pub struct CopyingStrategy {
     staging: Mutex<Vec<wgpu::Buffer>>,
     uploads: Mutex<Vec<UploadStaging>>,
+    inputs: DevicePool,
 }
 
 impl CopyingStrategy {
@@ -128,7 +139,7 @@ impl CopyingStrategy {
             None => UploadStaging {
                 buf: device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("bytelanes upload"),
-                    size: size.max(MIN_STAGING).next_power_of_two(),
+                    size: size_class(size.max(MIN_STAGING)),
                     usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
                     mapped_at_creation: true,
                 }),
@@ -172,7 +183,7 @@ impl CopyingStrategy {
             Some(i) => pool.swap_remove(i),
             None => device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("bytelanes readback"),
-                size: size.max(MIN_STAGING).next_power_of_two(),
+                size: size_class(size.max(MIN_STAGING)),
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             }),
@@ -207,23 +218,16 @@ impl BufferStrategy for CopyingStrategy {
         data: &[u8],
         capacity: u64,
     ) -> wgpu::Buffer {
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bytelanes input"),
-            size: capacity.max(16),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        if data.is_empty() {
-            return buffer;
-        }
-        // Copies move whole 4-byte words; the tail word is zero-padded.
+        // A pooled device buffer: it may hold an earlier program's bytes, so
+        // everything after the data up to `capacity` is zeroed.
+        let capacity = capacity.max(16);
+        let (buffer, _) = self.inputs.take(device, capacity, "bytelanes input");
         let n = data.len();
+        // Copies move whole 4-byte words; the tail word is zero-padded.
         let size = (n as u64).next_multiple_of(4);
         // Small inputs: wgpu's own staging suballocates and is cheaper.
         if size < MIN_STAGING {
-            write_via_queue(queue, &buffer, data);
+            write_via_queue(queue, &buffer, data, capacity);
             return buffer;
         }
         let s = self.take_upload(device, size);
@@ -239,7 +243,7 @@ impl BufferStrategy for CopyingStrategy {
         if !written {
             // Not mapped after all: fall back to wgpu's own staging.
             drop(s);
-            write_via_queue(queue, &buffer, data);
+            write_via_queue(queue, &buffer, data, capacity);
             return buffer;
         }
         s.buf.unmap();
@@ -247,9 +251,16 @@ impl BufferStrategy for CopyingStrategy {
             label: Some("bytelanes upload"),
         });
         enc.copy_buffer_to_buffer(&s.buf, 0, &buffer, 0, size);
+        if capacity > size {
+            enc.clear_buffer(&buffer, size, Some(capacity - size));
+        }
         queue.submit([enc.finish()]);
         self.give_upload(s);
         buffer
+    }
+
+    fn recycle(&self, buffer: wgpu::Buffer) {
+        self.inputs.give(buffer);
     }
 
     fn download(

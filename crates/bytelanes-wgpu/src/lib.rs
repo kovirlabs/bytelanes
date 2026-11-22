@@ -25,6 +25,7 @@
 
 mod backend;
 mod gpu;
+mod pool;
 mod strategy;
 mod tables;
 

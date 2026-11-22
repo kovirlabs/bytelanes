@@ -2,6 +2,9 @@
 
 use wgpu::util::DeviceExt;
 
+use std::sync::Mutex;
+
+use crate::pool::DevicePool;
 use crate::strategy::{BufferStrategy, Readback};
 use crate::tables;
 
@@ -59,6 +62,19 @@ pub(crate) struct Gpu {
     sbox: wgpu::Buffer,
     pub(crate) sbox_bytes: [u8; 256],
     dummy: wgpu::Buffer,
+    /// Reused scratch buffers for op outputs and intermediates.
+    scratch: DevicePool,
+    /// Buffers taken since the last `recycle`: returned to their pool once
+    /// the program that uses them has submitted all its work.
+    leases: Mutex<Vec<Lease>>,
+    /// Reused scratch buffers to zero at the next `submit`.
+    clears: Mutex<Vec<(wgpu::Buffer, u64)>>,
+}
+
+/// A pooled buffer in use, and which pool it goes back to.
+enum Lease {
+    Scratch(wgpu::Buffer),
+    Input(wgpu::Buffer),
 }
 
 fn words_to_bytes(words: &[u32]) -> Vec<u8> {
@@ -218,15 +234,57 @@ impl Gpu {
             sbox,
             sbox_bytes,
             dummy,
+            scratch: DevicePool::default(),
+            leases: Mutex::new(Vec::new()),
+            clears: Mutex::new(Vec::new()),
         })
+    }
+
+    fn lease(&self, l: Lease) {
+        self.leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(l);
+    }
+
+    /// Returns every buffer taken since the last call to its pool. Call it
+    /// once the current program has submitted all its GPU work: queue order
+    /// then makes reuse by a later program safe.
+    pub(crate) fn recycle(&self) {
+        let leases = std::mem::take(&mut *self.leases.lock().unwrap_or_else(|e| e.into_inner()));
+        for l in leases {
+            match l {
+                Lease::Scratch(b) => self.scratch.give(b),
+                Lease::Input(b) => self.strategy.recycle(b),
+            }
+        }
     }
 
     pub(crate) fn strategy_name(&self) -> &'static str {
         self.strategy.name()
     }
 
-    /// A zero-filled buffer for `len` logical bytes.
+    /// A zero-filled scratch buffer for `len` logical bytes, from the pool.
+    /// A reused buffer is cleared first, so it reads exactly like a new one.
+    /// It goes back to the pool at the next `recycle`.
     pub(crate) fn zeroed(&self, label: &str, len: u64) -> wgpu::Buffer {
+        let size = padded(len);
+        let (buf, reused) = self.scratch.take(&self.device, size, label);
+        if reused {
+            // Cleared at the start of the next `submit`, before any kernel
+            // that could use it.
+            self.clears
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((buf.clone(), size));
+        }
+        self.lease(Lease::Scratch(buf.clone()));
+        buf
+    }
+
+    /// A new zero-filled buffer for `len` logical bytes, owned by the
+    /// caller (device buffers named by programs). Not pooled.
+    pub(crate) fn fresh_zeroed(&self, label: &str, len: u64) -> wgpu::Buffer {
         // New wgpu buffers are zero-initialised.
         self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
@@ -250,6 +308,7 @@ impl Gpu {
         let buf = self
             .strategy
             .upload(&self.device, &self.queue, data, padded(data.len() as u64));
+        self.lease(Lease::Input(buf.clone()));
         Data {
             buf,
             off: 0,
@@ -325,6 +384,21 @@ impl Gpu {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None })
     }
 
+    /// Submits `enc`, preceded in the same submission by the clears of any
+    /// reused scratch buffers taken since the last submit.
+    fn submit(&self, enc: wgpu::CommandEncoder) {
+        let clears = std::mem::take(&mut *self.clears.lock().unwrap_or_else(|e| e.into_inner()));
+        if clears.is_empty() {
+            self.queue.submit([enc.finish()]);
+            return;
+        }
+        let mut pre = self.encoder();
+        for (buf, size) in &clears {
+            pre.clear_buffer(buf, 0, Some(*size));
+        }
+        self.queue.submit([pre.finish(), enc.finish()]);
+    }
+
     /// CRC-32C of `input`, as a buffer whose first word is the CRC.
     pub(crate) fn crc(&self, input: &Data) -> wgpu::Buffer {
         let n = input.len as u32;
@@ -388,7 +462,7 @@ impl Gpu {
             ],
         );
         self.dispatch(&mut enc, &self.crc.pipelines[2], &g, 1);
-        self.queue.submit([enc.finish()]);
+        self.submit(enc);
         out
     }
 
@@ -420,7 +494,7 @@ impl Gpu {
             );
             let mut enc = self.encoder();
             self.dispatch(&mut enc, &self.aes.pipelines[0], &g, blocks.div_ceil(64));
-            self.queue.submit([enc.finish()]);
+            self.submit(enc);
         }
         Data {
             buf: out,
@@ -454,7 +528,7 @@ impl Gpu {
         self.dispatch(&mut enc, &self.filter.pipelines[0], &g, tiles);
         self.dispatch(&mut enc, &self.filter.pipelines[1], &g, 1);
         self.dispatch(&mut enc, &self.filter.pipelines[2], &g, tiles);
-        self.queue.submit([enc.finish()]);
+        self.submit(enc);
         let total = self.download(&counts, u64::from(tiles) * 4, 4)?;
         let total = u32::from_le_bytes([total[0], total[1], total[2], total[3]]);
         Ok(Data {
@@ -477,7 +551,7 @@ impl Gpu {
         let g = self.bind(&self.place, &[&src.buf, dst, &params]);
         let mut enc = self.encoder();
         self.dispatch(&mut enc, &self.place.pipelines[0], &g, words.div_ceil(64));
-        self.queue.submit([enc.finish()]);
+        self.submit(enc);
     }
 
     /// Round keys for `key`, in a GPU buffer.
