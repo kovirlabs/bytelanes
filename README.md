@@ -63,7 +63,7 @@ before the previous program's result is copied out. A program that reads
 host bytes the previous one writes waits for it, so results never change.
 `WgpuBackend::set_overlap(false)` turns overlap off.
 
-Checked so far on one GPU: AMD Radeon RX 7800 XT, Windows, Vulkan and DX12.
+Checked so far on one GPU: AMD Radeon RX 7800 XT, Windows, Vulkan and DX12, for every op including the fixed-point FFT.
 Metal (MacBook) is M4.
 
 ### GPU CI
@@ -105,7 +105,7 @@ cargo run --release -p bytelanes-bench -- ops ... --ops filter --sizes 16M,24M,3
 repetition, the GPU with program overlap off and on, and the CPU reference on
 1, half and all logical CPUs.
 
-- `ops` runs checksum, encrypt, decrypt and filter from 64 B to 256 MiB.
+- `ops` runs checksum, encrypt, decrypt, filter and FFT (4,096-sample frames) from 64 B to 256 MiB.
 - `commitlog` is a transactional workload: batches of generated 256-byte
   payment records, from 1 to about 1M per batch. It has two paths:
   - **Write:** a fraud-rule filter, plus encrypting the records for the log.

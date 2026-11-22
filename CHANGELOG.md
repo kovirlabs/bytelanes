@@ -40,6 +40,17 @@
   capabilities and completes it with `UnsupportedOp`; its golden-vector test
   skips cases that use ops the backend does not list.
 
+### bytelanes-wgpu (M7, agent B): the FFT on the GPU
+
+- `Op::Fft` in WGSL, bit for bit as the op format specifies.
+  - 64-bit products and sums are emulated with pairs of `u32`.
+  - The halving butterfly is overflow-free and exact.
+  - The normative twiddle table is uploaded once.
+  - The first 10 stages are fused in workgroup memory.
+- `WgpuBackend` lists `Fft`, so every golden vector now runs on the GPU.
+- Tests: the FFT is in the 10,000-random-case loop, and `tests/large.rs`
+  adds 4,096-point FFTs over 64 MiB and 65,536-point FFTs over 32 MiB.
+
 ### bytelanes-wgpu (M5 tuning, agent B)
 
 - **Breaking:** `CopyingStrategy` is now a struct holding staging pools.
