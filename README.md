@@ -17,7 +17,7 @@ network join, appliance image), `bytelanes` (GPU data ops), `stagelanes`
 | `bytelanes-abi` | The op format: channel programs, commands, extents, completions, status codes. `no_std` |
 | `bytelanes` | The `ChannelBackend` trait, the CPU reference backend (`bytelanes::cpu`) and the conformance harness |
 | `bytelanes-wgpu` | GPU backend through wgpu: WGSL shaders for every op, a `BufferStrategy` seam for how bytes reach the GPU |
-| `bytelanes-bench` | GPU versus CPU benchmark (not built yet) |
+| `bytelanes-bench` | GPU versus CPU benchmark per op across input sizes, plus a commit-log workload; writes atlas run files |
 
 `vectors/` holds the golden vectors every backend must reproduce byte for byte;
 see [`vectors/README.md`](vectors/README.md).
@@ -70,15 +70,37 @@ and manual runs. It sets `BYTELANES_REQUIRE_BACKENDS=vulkan,dx12`, so a
 missing driver or adapter fails the job instead of skipping it.
 
 The runner lives in `C:\Users\gress\actions-runner\bytelanes` and starts at
-logon from the scheduled task `GitHub runner bytelanes-gpu` (log:
-`runner.log` there). Jobs wait while the machine is off or logged out.
-Stop the runner during pipeline or GPU benchmarks on that machine, so a CI
-job can't disturb a measurement:
+logon from the shortcut `GitHub runner bytelanes-gpu` in the user's Startup
+folder, which runs `start-runner.cmd` (log: `runner.log` there). Jobs wait
+while the machine is off or logged out. Stop the runner during pipeline or
+GPU benchmarks on that machine, so a CI job can't disturb a measurement:
 
 ```powershell
-Stop-ScheduledTask 'GitHub runner bytelanes-gpu'; Stop-Process -Name Runner.Listener,Runner.Worker -ErrorAction SilentlyContinue
-Start-ScheduledTask 'GitHub runner bytelanes-gpu'   # afterwards
+Stop-Process -Name Runner.Listener,Runner.Worker -ErrorAction SilentlyContinue
+Start-Process C:\Users\gress\actions-runner\bytelanes\start-runner.cmd -WindowStyle Minimized   # afterwards
 ```
+
+## Benchmarks
+
+`bytelanes-bench` measures the CPU reference and every hardware GPU adapter
+through the same `ChannelBackend` API, so GPU times include every transfer.
+Every completion must match the CPU reference, or the run aborts. It
+records latency percentiles and the CPU time spent on the work, and writes
+one run file per op to `../paralanes/atlas/runs/<machine>/`.
+
+```text
+cargo run --release -p bytelanes-bench -- ops       --machine ryzen --host-link "PCIe 3.0 x16" [--note ...]
+cargo run --release -p bytelanes-bench -- commitlog --machine ryzen --host-link "PCIe 3.0 x16"
+```
+
+- `ops` runs checksum, encrypt, decrypt and filter from 64 B to 256 MiB.
+- `commitlog` is a transactional workload: batches of generated 256-byte
+  payment records, from 1 to about 1M per batch. It has two paths:
+  - **Write:** a fraud-rule filter, plus encrypting the records for the log.
+  - **Read:** decrypt an encrypted column and filter it on the device, as
+    one chained program.
+- Results and crossover sizes are in the paralanes atlas
+  (`atlas/crossover.md`). No figures appear here without their run file.
 
 ## Licence
 

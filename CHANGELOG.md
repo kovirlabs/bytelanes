@@ -40,6 +40,34 @@
   capabilities and completes it with `UnsupportedOp`; its golden-vector test
   skips cases that use ops the backend does not list.
 
+### bytelanes-wgpu (M5 tuning, agent B)
+
+- **Breaking:** `CopyingStrategy` is now a struct holding staging pools.
+  Construct it with `CopyingStrategy::new()` instead of the unit value.
+- `BufferStrategy::download_into` and `Readback` read several ranges with
+  one wait. The default implementation uses `download`, so existing
+  strategies keep working.
+- One GPU wait per program instead of two. The last command's host result
+  and its CRC come back in one readback, straight into the host buffer.
+- `CopyingStrategy` reuses its staging buffers: readbacks always, uploads of
+  64 KiB and more. A transfer no longer allocates fresh host memory each
+  time.
+- The CRC-32C chunk pass reads whole words with slicing-by-4 tables, instead
+  of a byte at a time.
+- Measured effect: see the paralanes atlas (`atlas/crossover.md`), which
+  keeps the untuned runs for comparison.
+
+### bytelanes-bench (M5)
+
+- `ops`: checksum, encrypt, decrypt and filter from 64 B to 256 MiB, on the
+  CPU reference and every hardware adapter. Writes one atlas run file per op
+  with latency percentiles, the CPU time spent on the work, and both
+  crossover sizes.
+- `commitlog`: a transactional workload of generated payment records, with
+  a write path (fraud filter plus encryption) and a read path (chained
+  decrypt and filter).
+- Every repetition's completion must equal the CPU reference's.
+
 ### Workspace
 
 - MSRV raised from 1.85 to 1.89 for every crate. 1.85 was never accurate:
