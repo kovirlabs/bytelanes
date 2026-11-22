@@ -6,7 +6,8 @@
 //! hand the GPU host-visible memory instead. The ops only ever see a
 //! `wgpu::Buffer` with the input at offset 0.
 
-use std::sync::{Mutex, mpsc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 
 /// One range to read back: `dst.len()` bytes of `buffer` from `offset`.
 pub struct Readback<'a> {
@@ -68,19 +69,94 @@ const MIN_STAGING: u64 = 64 << 10;
 /// Most staging buffers kept for reuse.
 const MAX_POOLED: usize = 4;
 
-/// Copies through `queue.write_buffer` on the way in and a mappable staging
-/// buffer on the way out. Staging buffers are kept and reused, so a
-/// readback does not allocate (and the OS does not zero) fresh host memory
-/// every time; several ranges come back with one wait.
+/// `data` into `buffer` at offset 0 through `queue.write_buffer`, which
+/// needs whole 4-byte words: the tail word is zero-padded.
+fn write_via_queue(queue: &wgpu::Queue, buffer: &wgpu::Buffer, data: &[u8]) {
+    let n = data.len();
+    let whole = n & !3;
+    if whole > 0 {
+        queue.write_buffer(buffer, 0, &data[..whole]);
+    }
+    if whole < n {
+        let mut tail = [0u8; 4];
+        tail[..n - whole].copy_from_slice(&data[whole..]);
+        queue.write_buffer(buffer, whole as u64, &tail);
+    }
+}
+
+/// An upload staging buffer and whether it is mapped (ready to write).
+#[derive(Debug)]
+struct UploadStaging {
+    buf: wgpu::Buffer,
+    ready: Arc<AtomicBool>,
+}
+
+/// Copies through host-visible staging buffers both ways: the input is
+/// written into a mapped `MAP_WRITE` buffer and copied to device memory on
+/// the GPU; results are copied into a `MAP_READ` buffer and read from it.
+/// Staging buffers are kept and reused, so a transfer does not allocate
+/// (and the OS does not zero) fresh host memory every time; several ranges
+/// come back with one wait.
 #[derive(Debug, Default)]
 pub struct CopyingStrategy {
     staging: Mutex<Vec<wgpu::Buffer>>,
+    uploads: Mutex<Vec<UploadStaging>>,
 }
 
 impl CopyingStrategy {
-    /// A strategy with an empty staging pool.
+    /// A strategy with empty staging pools.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A pooled upload staging buffer of at least `size` bytes, mapped for
+    /// writing. Buffers still being re-mapped after earlier uploads are
+    /// skipped (every program's readback waits for the GPU, so by the next
+    /// program they are normally ready).
+    fn take_upload(&self, device: &wgpu::Device, size: u64) -> UploadStaging {
+        // Let finished map requests run their callbacks; never blocks.
+        let _ = device.poll(wgpu::PollType::Poll);
+        let mut pool = self.uploads.lock().unwrap_or_else(|e| e.into_inner());
+        let best = pool
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.buf.size() >= size && s.ready.load(Ordering::Acquire))
+            .min_by_key(|(_, s)| s.buf.size())
+            .map(|(i, _)| i);
+        match best {
+            Some(i) => pool.swap_remove(i),
+            None => UploadStaging {
+                buf: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("bytelanes upload"),
+                    size: size.max(MIN_STAGING).next_power_of_two(),
+                    usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: true,
+                }),
+                ready: Arc::new(AtomicBool::new(true)),
+            },
+        }
+    }
+
+    /// Starts re-mapping `s` for the next upload and returns it to the pool.
+    fn give_upload(&self, s: UploadStaging) {
+        s.ready.store(false, Ordering::Release);
+        let ready = Arc::clone(&s.ready);
+        s.buf.map_async(wgpu::MapMode::Write, .., move |r| {
+            if r.is_ok() {
+                ready.store(true, Ordering::Release);
+            }
+        });
+        let mut pool = self.uploads.lock().unwrap_or_else(|e| e.into_inner());
+        pool.push(s);
+        if pool.len() > MAX_POOLED
+            && let Some(i) = pool
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, s)| s.buf.size())
+                .map(|(i, _)| i)
+        {
+            pool.swap_remove(i);
+        }
     }
 
     /// A pooled `MAP_READ` buffer of at least `size` bytes.
@@ -139,18 +215,40 @@ impl BufferStrategy for CopyingStrategy {
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        if !data.is_empty() {
-            // write_buffer needs a multiple of 4 bytes.
-            let whole = data.len() & !3;
-            if whole > 0 {
-                queue.write_buffer(&buffer, 0, &data[..whole]);
-            }
-            if whole < data.len() {
-                let mut tail = [0u8; 4];
-                tail[..data.len() - whole].copy_from_slice(&data[whole..]);
-                queue.write_buffer(&buffer, whole as u64, &tail);
-            }
+        if data.is_empty() {
+            return buffer;
         }
+        // Copies move whole 4-byte words; the tail word is zero-padded.
+        let n = data.len();
+        let size = (n as u64).next_multiple_of(4);
+        // Small inputs: wgpu's own staging suballocates and is cheaper.
+        if size < MIN_STAGING {
+            write_via_queue(queue, &buffer, data);
+            return buffer;
+        }
+        let s = self.take_upload(device, size);
+        let written = match s.buf.get_mapped_range_mut(..size) {
+            Ok(mut view) => {
+                let mut w = view.slice(..);
+                w.slice(..n).copy_from_slice(data);
+                w.slice(n..).fill(0);
+                true
+            }
+            Err(_) => false,
+        };
+        if !written {
+            // Not mapped after all: fall back to wgpu's own staging.
+            drop(s);
+            write_via_queue(queue, &buffer, data);
+            return buffer;
+        }
+        s.buf.unmap();
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("bytelanes upload"),
+        });
+        enc.copy_buffer_to_buffer(&s.buf, 0, &buffer, 0, size);
+        queue.submit([enc.finish()]);
+        self.give_upload(s);
         buffer
     }
 
