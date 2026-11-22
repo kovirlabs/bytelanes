@@ -46,7 +46,16 @@ Crates live in `crates/<name>/`. The workspace pulls in every crate under
 `crates/*`, so a new directory there becomes a member automatically. Version,
 edition (2024), MSRV (1.85), licence and `publish = false` are set once in
 `[workspace.package]` in the root `Cargo.toml`, so a version bump is one edit
-there. Every crate is still a stub: `bytelanes-bench` exits with code 2.
+there. `bytelanes-bench` is still a stub (exits with code 2). `bytelanes-wgpu`
+sets its own `rust-version = "1.87"` because wgpu 30 needs it.
+
+`bytelanes-wgpu` layout: `src/shaders/*.wgsl` (each kernel shader gets
+`bytes.wgsl` appended for byte loads and 2D dispatch indexing), `gpu.rs`
+(device, pipelines, kernel launchers), `backend.rs` (`WgpuBackend`: host-side
+status checks in the CPU reference's order, worker thread), `strategy.rs`
+(`BufferStrategy`, agent C's seam), `tables.rs` (CRC and AES constants
+computed on the host). GPU tests skip with `SKIPPED` when no hardware adapter
+exists; run them with `--release` (debug builds are several times slower).
 
 `PLAN.md`, `SPEC.md`, `machines.md` and `status` are gitignored here on
 purpose. Read them in `../paralanes`; don't copy them into this repo.
