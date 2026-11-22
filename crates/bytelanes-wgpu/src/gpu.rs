@@ -99,7 +99,7 @@ impl Gpu {
         let limits = adapter.limits();
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("bytelanes"),
-            required_features: wgpu::Features::empty(),
+            required_features: strategy.required_features(),
             required_limits: limits.clone(),
             experimental_features: wgpu::ExperimentalFeatures::default(),
             memory_hints: wgpu::MemoryHints::Performance,
@@ -287,11 +287,15 @@ impl Gpu {
     }
 
     /// A zero-filled scratch buffer for `len` logical bytes, from the pool.
-    /// A reused buffer is cleared first, so it reads exactly like a new one.
-    /// It goes back to the pool at the next `recycle`.
+    /// New buffers come from the strategy's `alloc` (so a unified-memory
+    /// strategy can make results the CPU reads in place); a reused buffer is
+    /// cleared first, so it reads exactly like a new one. It goes back to the
+    /// pool at the next `recycle`.
     pub(crate) fn zeroed(&self, label: &str, len: u64) -> wgpu::Buffer {
         let size = padded(len);
-        let (buf, reused) = self.scratch.take(&self.device, size, label);
+        let (buf, reused) = self.scratch.take(&self.device, size, |alloc_size| {
+            self.strategy.alloc(&self.device, label, alloc_size)
+        });
         if reused {
             // Cleared at the start of the next `submit`, before any kernel
             // that could use it.
@@ -305,17 +309,10 @@ impl Gpu {
     }
 
     /// A new zero-filled buffer for `len` logical bytes, owned by the
-    /// caller (device buffers named by programs). Not pooled.
+    /// caller (device buffers named by programs), from the strategy's
+    /// `alloc`. Not pooled.
     pub(crate) fn fresh_zeroed(&self, label: &str, len: u64) -> wgpu::Buffer {
-        // New wgpu buffers are zero-initialised.
-        self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size: padded(len),
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
+        self.strategy.alloc(&self.device, label, padded(len))
     }
 
     /// Whether a buffer for `len` bytes fits this device's limits.

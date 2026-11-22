@@ -35,12 +35,15 @@ pub(crate) struct DevicePool {
 
 impl DevicePool {
     /// A buffer of at least `size` bytes, and whether it was reused (its
-    /// contents are then whatever the last user left).
+    /// contents are then whatever the last user left). A new buffer comes
+    /// from `alloc`, called with the size class of `size` (at most the
+    /// device's largest bindable buffer); it must have at least
+    /// `STORAGE | COPY_SRC | COPY_DST` usage.
     pub(crate) fn take(
         &self,
         device: &wgpu::Device,
         size: u64,
-        label: &str,
+        alloc: impl FnOnce(u64) -> wgpu::Buffer,
     ) -> (wgpu::Buffer, bool) {
         {
             let mut pool = self.bufs.lock().unwrap_or_else(|e| e.into_inner());
@@ -58,16 +61,9 @@ impl DevicePool {
         let cap = limits
             .max_buffer_size
             .min(limits.max_storage_buffer_binding_size);
-        let alloc = size_class(size).min(cap).max(size);
-        let buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size: alloc,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_SRC
-                | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        (buf, false)
+        // Rounded to the 4-byte copy alignment, as `alloc` requires.
+        let class = size_class(size).min(cap).max(size).next_multiple_of(4);
+        (alloc(class), false)
     }
 
     /// Keeps `buf` for reuse, dropping the smallest buffers while the pool

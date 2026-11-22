@@ -66,17 +66,17 @@ pub(crate) fn multmodp(a: u32, mut b: u32) -> u32 {
 /// `x^(8 * 2^k) mod P` for `k` in `0..32`: multiplying a CRC register by
 /// entry `k` is the same as feeding it `2^k` zero bytes.
 pub(crate) fn crc_byte_powers() -> [u32; 32] {
-    // x^(2^n) mod P, n = 0..32; the sequence repeats with period 32.
-    let mut x2n = [0u32; 32];
-    let mut p = 1u32 << 30; // x^1
-    x2n[0] = p;
-    for e in x2n.iter_mut().skip(1) {
-        p = multmodp(p, p);
-        *e = p;
-    }
+    // Entry k is x^(2^(k+3)) mod P: start from x^8 and square. Do not wrap
+    // the index the way zlib does for CRC-32: for CRC-32C, x^(2^n) mod P
+    // repeats with period 31, not 32.
     let mut out = [0u32; 32];
-    for (k, e) in out.iter_mut().enumerate() {
-        *e = x2n[(k + 3) & 31];
+    let mut p = 1u32 << 30; // x^1
+    for _ in 0..3 {
+        p = multmodp(p, p);
+    }
+    for e in &mut out {
+        *e = p;
+        p = multmodp(p, p);
     }
     out
 }
@@ -156,6 +156,23 @@ mod tests {
     use super::*;
     use bytelanes::conformance::SplitMix64;
     use bytelanes::cpu::ops;
+
+    /// Entry `k` is `x^(8 * 2^k)`: entry 0 is one zero byte through the
+    /// table, and each entry is the square of the one before. Entries 29 to
+    /// 31 (inputs of 512 MiB and more) once wrapped back to `x^1`, `x^2` and
+    /// `x^4`, on the false assumption that `x^(2^n) mod P` repeats with
+    /// period 32. For CRC-32C the period is 31.
+    #[test]
+    fn crc_byte_powers_are_successive_squares() {
+        let t = crc_table();
+        let one_zero_byte = |r: u32| t[(r & 0xFF) as usize] ^ (r >> 8);
+        let pow = crc_byte_powers();
+        // x^0 is 1 << 31 in this reflected representation.
+        assert_eq!(pow[0], one_zero_byte(1 << 31));
+        for k in 1..32 {
+            assert_eq!(pow[k], multmodp(pow[k - 1], pow[k - 1]), "entry {k}");
+        }
+    }
 
     #[test]
     fn crc_table_matches_reference() {
