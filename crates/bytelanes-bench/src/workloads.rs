@@ -34,7 +34,16 @@ fn program(cmds: &[ChannelCmd]) -> ChannelProgram {
 }
 
 /// The single-op benchmark ops.
-pub const OPS: [&str; 4] = ["checksum", "encrypt", "decrypt", "filter"];
+pub const OPS: [&str; 5] = ["checksum", "encrypt", "decrypt", "filter", "fft"];
+
+/// FFT frame size for the `fft` op: `2^FFT_LOG2N` samples, the window
+/// diagsteno uses for its accelerometer channels.
+pub const FFT_LOG2N: u8 = 12;
+
+/// Whether `op` can run on `n` bytes (FFT needs whole frames).
+pub fn op_fits(op: &str, n: u64) -> bool {
+    op != "fft" || n.is_multiple_of(4 << FFT_LOG2N)
+}
 
 /// Threshold for the u32 Filter: about 1% of uniform values are above it.
 const FILTER_U32_GT: u32 = u32::MAX - u32::MAX / 100;
@@ -74,6 +83,14 @@ pub fn op_case(op: &str, n: u64) -> Case {
             ),
             n,
         ),
+        "fft" => {
+            let frames = (n / (4 << FFT_LOG2N)) as usize;
+            let out = bytelanes::cpu::fft::output_len(FFT_LOG2N, frames) as u64;
+            (
+                ChannelCmd::fft(Extent::host(IN, 0, n), Extent::host(OUT, 0, out), FFT_LOG2N),
+                out,
+            )
+        }
         other => panic!("unknown op {other}"),
     };
     Case {

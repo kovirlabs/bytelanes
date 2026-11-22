@@ -56,6 +56,9 @@ pub(crate) struct Gpu {
     aes: Kernel,
     filter: Kernel,
     place: Kernel,
+    fft: Kernel,
+    /// The normative Q30 FFT twiddle table (32,768 pairs of i32).
+    twiddles: wgpu::Buffer,
     crc_table: wgpu::Buffer,
     crc_powers: wgpu::Buffer,
     te0: wgpu::Buffer,
@@ -202,6 +205,18 @@ impl Gpu {
             &[storage(0, true), storage(1, false), uniform(2)],
             &["main"],
         );
+        let fft = kernel(
+            "fft",
+            include_str!("shaders/fft.wgsl"),
+            &[
+                storage(0, true),
+                storage(1, true),
+                storage(2, false),
+                storage(3, false),
+                uniform(4),
+            ],
+            &["fft_load", "fft_local", "fft_stage", "fft_extract"],
+        );
 
         let constant = |label: &str, words: &[u32]| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -217,6 +232,11 @@ impl Gpu {
         let te0 = constant("aes te0", &tables::aes_te0(&sbox_bytes));
         let sbox = constant("aes sbox", &sbox_words);
         let dummy = constant("dummy", &[0; 4]);
+        let twiddles = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("fft twiddles"),
+            contents: &bytelanes::cpu::fft::twiddle_bytes(),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
 
         Ok(Gpu {
             device,
@@ -228,6 +248,8 @@ impl Gpu {
             aes,
             filter,
             place,
+            fft,
+            twiddles,
             crc_table,
             crc_powers,
             te0,
@@ -546,6 +568,56 @@ impl Gpu {
             off: 0,
             len: u64::from(total) * 4,
         })
+    }
+
+    /// Bytes of device memory the FFT's working array needs for `input_len`
+    /// bytes of input (8 bytes per 4-byte sample).
+    pub(crate) fn fft_work_len(input_len: u64) -> u64 {
+        input_len * 2
+    }
+
+    /// The fixed-point FFT of every `2^log2n`-sample frame in `input`
+    /// (a whole number of frames): bins `0..=N/2` per frame as `(i32, i32)`.
+    pub(crate) fn fft(&self, input: &Data, log2n: u32) -> Data {
+        let n = 1u64 << log2n;
+        let frames = input.len / (4 * n);
+        let elems = (frames * n) as u32;
+        let bins = (frames * (n / 2 + 1)) as u32;
+        let work = self.zeroed("fft work", Self::fft_work_len(input.len));
+        let out = self.zeroed("fft out", u64::from(bins) * 8);
+        if frames == 0 {
+            return Data {
+                buf: out,
+                off: 0,
+                len: 0,
+            };
+        }
+        let params = |s: u32| self.uniform(&[input.off as u32, log2n, frames as u32, s]);
+        let bind =
+            |p: &wgpu::Buffer| self.bind(&self.fft, &[&input.buf, &self.twiddles, &work, &out, p]);
+        let mut enc = self.encoder();
+        // Load (bit-reverse, clamp), the first stages in workgroup memory,
+        // one global pass per remaining stage, then the bins.
+        let local = log2n.min(10);
+        let g = bind(&params(local));
+        self.dispatch(&mut enc, &self.fft.pipelines[0], &g, elems.div_ceil(256));
+        self.dispatch(&mut enc, &self.fft.pipelines[1], &g, elems >> local);
+        for s in local + 1..=log2n {
+            let gs = bind(&params(s));
+            self.dispatch(
+                &mut enc,
+                &self.fft.pipelines[2],
+                &gs,
+                (elems / 2).div_ceil(256),
+            );
+        }
+        self.dispatch(&mut enc, &self.fft.pipelines[3], &g, bins.div_ceil(256));
+        self.submit(enc);
+        Data {
+            buf: out,
+            off: 0,
+            len: u64::from(bins) * 8,
+        }
     }
 
     /// Writes `src` into `dst` at byte `dst_off`, keeping the bytes around it.

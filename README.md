@@ -65,7 +65,8 @@ host bytes the previous one writes waits for it, so results never change.
 `WgpuBackend::set_overlap(false)` turns overlap off.
 
 Checked so far on two GPUs: AMD Radeon RX 7800 XT (Windows, Vulkan and
-DX12) and Apple M5 Pro (macOS on AArch64, Metal).
+DX12) and Apple M5 Pro (macOS on AArch64, Metal). The fixed-point FFT is
+checked on the RX 7800 XT only so far; Metal ran before the GPU FFT existed.
 
 ### Buffer strategies
 
@@ -131,7 +132,7 @@ cargo run --release -p bytelanes-bench -- ops ... --ops filter --sizes 16M,24M,3
 repetition, the GPU with program overlap off and on, and the CPU reference on
 1, half and all logical CPUs.
 
-- `ops` runs checksum, encrypt, decrypt and filter from 64 B to 256 MiB.
+- `ops` runs checksum, encrypt, decrypt, filter and FFT (4,096-sample frames) from 64 B to 256 MiB.
 - `commitlog` is a transactional workload: batches of generated 256-byte
   payment records, from 1 to about 1M per batch. It has two paths:
   - **Write:** a fraud-rule filter, plus encrypting the records for the log.

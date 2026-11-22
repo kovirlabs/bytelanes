@@ -191,3 +191,31 @@ fn filter_70m_rows() {
         ),
     ]);
 }
+
+#[test]
+#[ignore = "large: run with --ignored"]
+fn fft_large() {
+    // Full-scale i32 samples (beyond the +-2^30 clamp) at an unaligned
+    // offset; 4096-point frames over 64 MiB need a 2D grid, and
+    // 65536-point frames run six global stages after the fused ones.
+    let samples = |bytes: usize, seed: u64| data(bytes, seed);
+    let mut cases = Vec::new();
+    for (log2n, mib, seed) in [(12u8, 64usize, 6u64), (16, 32, 7)] {
+        let n = (mib * MIB) as u64;
+        let mut input = vec![0u8; 2];
+        input.extend(samples(n as usize, seed));
+        let out = bytelanes::cpu::fft::output_len(log2n, (n / (4 << log2n)) as usize) as u64;
+        cases.push(case(
+            &format!("fft log2n {log2n} over {mib} MiB at offset 2"),
+            &[ChannelCmd::fft(
+                Extent::host(IN, 2, n),
+                Extent::host(OUT, 0, out),
+                log2n,
+            )],
+            input,
+            out,
+            0,
+        ));
+    }
+    run_all(&cases);
+}
