@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "name": "fft/dst-too-small",
+  "description": "one frame of 8 needs 5 bins (40 bytes); dst holds 32: DstTooSmall",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 32
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "DstTooSmall",
+    "status_code": 6,
+    "cmd_index": 0,
+    "bytes": 40,
+    "crc": 0,
+    "output_buf": 2,
+    "output_offset": 0
+  }
+}

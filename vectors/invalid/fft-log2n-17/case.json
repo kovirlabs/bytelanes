@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "name": "invalid/fft-log2n-17",
+  "description": "Fft log2n 17 is out of range: InvalidProgram at 0",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 64
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "InvalidProgram",
+    "status_code": 1,
+    "cmd_index": 0,
+    "bytes": 0,
+    "crc": 0,
+    "output_buf": 2,
+    "output_offset": 0
+  }
+}

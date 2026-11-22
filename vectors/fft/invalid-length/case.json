@@ -1,0 +1,27 @@
+{
+  "format": 1,
+  "name": "fft/invalid-length",
+  "description": "60 bytes is not a whole frame of 16 samples: InvalidLength",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 200
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "InvalidLength",
+    "status_code": 7,
+    "cmd_index": 0,
+    "bytes": 0,
+    "crc": 0,
+    "output_buf": 2,
+    "output_offset": 0
+  }
+}

@@ -127,6 +127,8 @@ pub fn golden_cases() -> Vec<Case> {
     crypt_cases(&mut b, &mut rng);
     filter_cases(&mut b, &mut rng);
     program_cases(&mut b, &mut rng);
+    // Added in M7 with its own seed, so the M1 cases above keep their bytes.
+    fft_cases(&mut b, &mut SplitMix64::new(0x6666_745f_6d37));
     b.cases
 }
 
@@ -442,6 +444,161 @@ fn filter_cases(b: &mut Builder, rng: &mut SplitMix64) {
         rng.bytes(40),
         36,
         vec![],
+    );
+}
+
+fn i32s(v: impl IntoIterator<Item = i32>) -> Vec<u8> {
+    v.into_iter().flat_map(i32::to_le_bytes).collect()
+}
+
+fn fft_cases(b: &mut Builder, rng: &mut SplitMix64) {
+    use crate::cpu::fft::{SAMPLE_LIMIT, output_len};
+    let one =
+        |b: &mut Builder, name: &str, desc: &str, log2n: u8, input: Vec<u8>, frames: usize| {
+            b.single(
+                &format!("fft/{name}"),
+                desc,
+                |s, d| ChannelCmd::fft(s, d, log2n),
+                input,
+                output_len(log2n, frames) as u64,
+                vec![],
+            );
+        };
+    for log2n in [1u8, 4, 10] {
+        let n = 1usize << log2n;
+        let mut x = vec![0; n];
+        x[0] = SAMPLE_LIMIT;
+        one(
+            b,
+            &format!("kat-impulse-n{n}"),
+            "impulse: every bin is (2^30 / N, 0)",
+            log2n,
+            i32s(x),
+            1,
+        );
+        one(
+            b,
+            &format!("kat-dc-n{n}"),
+            "constant: bin 0 holds it, the rest are 0",
+            log2n,
+            i32s(vec![-987_654_321; n]),
+            1,
+        );
+        let alt = (0..n).map(|i| if i % 2 == 0 { 55_555 } else { -55_555 });
+        one(
+            b,
+            &format!("kat-nyquist-n{n}"),
+            "alternating: bin N/2 holds it",
+            log2n,
+            i32s(alt),
+            1,
+        );
+    }
+    for log2n in 1..=16u8 {
+        let n = 1usize << log2n;
+        let frames = if log2n <= 12 { 2 } else { 1 };
+        let input = super::random::fft_samples(rng, frames * n);
+        one(
+            b,
+            &format!("random-log2n-{log2n}"),
+            "random, saturating, square-wave or extreme samples",
+            log2n,
+            input,
+            frames,
+        );
+    }
+    let n = 1024usize;
+    let square = (0..n as i32).map(|t| {
+        if (t / 16) % 2 == 0 {
+            SAMPLE_LIMIT
+        } else {
+            -SAMPLE_LIMIT
+        }
+    });
+    one(
+        b,
+        "square-full-scale",
+        "full-scale square wave, odd harmonics, largest butterfly growth",
+        10,
+        i32s(square),
+        1,
+    );
+    let sat = (0..64).map(|i| match i % 4 {
+        0 => i32::MAX,
+        1 => i32::MIN,
+        2 => SAMPLE_LIMIT + 1,
+        _ => -SAMPLE_LIMIT - 1,
+    });
+    one(
+        b,
+        "saturation",
+        "values beyond ±2^30 are clamped before the transform",
+        6,
+        i32s(sat),
+        1,
+    );
+    one(b, "empty", "no frames: 0 bytes, CRC 0", 8, vec![], 1);
+    b.single(
+        "fft/invalid-length",
+        "60 bytes is not a whole frame of 16 samples: InvalidLength",
+        |s, d| ChannelCmd::fft(s, d, 4),
+        vec![1; 60],
+        200,
+        vec![],
+    );
+    // Decrypt a frame of samples on the device, transform it, checksum the bins.
+    let n = 256u64;
+    let key = rng.array::<32>();
+    let iv = rng.array::<16>();
+    let keys = vec![(SLOT, key)];
+    let mut cipher = vec![0; (n * 4) as usize];
+    let plain = super::random::fft_samples(rng, n as usize);
+    crate::cpu::ops::aes256_ctr(&key, &iv, &plain, &mut cipher);
+    let v1 = Extent::vram(V1, 0, n * 4);
+    let v2 = Extent::vram(V2, 0, crate::cpu::fft::output_len(8, 1) as u64);
+    let p = program(&[
+        ChannelCmd::decrypt(Extent::host(IN, 0, n * 4), v1, SLOT, iv).chained(),
+        ChannelCmd::fft(v1, v2, 8).chained(),
+        ChannelCmd::checksum(v2, Extent::host(OUT, 0, 4)),
+    ]);
+    b.add(
+        "program/decrypt-fft-checksum",
+        "Host -> Decrypt -> Vram -> Fft -> Vram -> Checksum -> Host",
+        p,
+        vec![(IN, cipher), (OUT, vec![0; 4])],
+        vec![(V1, n * 4), (V2, 2048)],
+        keys.clone(),
+        0,
+    );
+
+    b.single(
+        "fft/dst-too-small",
+        "one frame of 8 needs 5 bins (40 bytes); dst holds 32: DstTooSmall",
+        |s, d| ChannelCmd::fft(s, d, 3),
+        i32s(1..=8),
+        32,
+        vec![],
+    );
+
+    // log2n out of range: the program fails validation, on every backend.
+    let mut params = [0; PARAMS_LEN];
+    params[0] = 17;
+    params[1] = 1;
+    let p = raw_program(&[ChannelCmd::new(
+        Op::Fft,
+        Flags::NONE,
+        Extent::host(IN, 0, 16),
+        Extent::host(OUT, 0, 16),
+        params,
+    )]);
+    b.add(
+        "invalid/fft-log2n-17",
+        "Fft log2n 17 is out of range: InvalidProgram at 0",
+        p,
+        vec![(IN, vec![1; 64]), (OUT, vec![0; 64])],
+        vec![],
+        vec![],
+        0,
     );
 }
 

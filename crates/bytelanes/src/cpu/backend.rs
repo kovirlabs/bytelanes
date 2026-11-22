@@ -18,7 +18,7 @@ pub const DEFAULT_QUEUE_DEPTH: usize = 1024;
 ///
 /// It supports `Host` and `Vram` extents (`Vram` buffers are ordinary memory
 /// here) and the ops with defined semantics: `Checksum`, `Encrypt`,
-/// `Decrypt` and `Filter`.
+/// `Decrypt`, `Filter` and `Fft`.
 pub struct CpuBackend {
     state: Mutex<State>,
     queue_depth: usize,
@@ -209,6 +209,11 @@ fn run_cmd(
             let mut idx = Vec::new();
             ops::filter(&spec, &input, &mut idx)?;
             ops::indices_to_bytes(&idx)
+        }
+        Op::Fft => {
+            let mut out = Vec::new();
+            super::fft::fft(cmd.fft_params().log2n(), &input, &mut out)?;
+            out
         }
         Op::Read | Op::Write | Op::Decompress | Op::Compress | Op::Score => {
             return Err(Status::UnsupportedOp.into());

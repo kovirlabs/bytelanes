@@ -51,7 +51,8 @@ pub use completion::{Completion, Status, Tag};
 pub use extent::{BufId, BufRange, DevId, Extent, ExtentKind, ExtentRef, NvmeRange};
 pub use op::{Flags, Op};
 pub use params::{
-    CmpOp, CryptParams, ElemType, FilterOutput, FilterParams, FilterSpec, PARAMS_LEN,
+    CmpOp, CryptParams, ElemType, FFT_MAX_LOG2N, FFT_MIN_LOG2N, FftParams, FilterOutput,
+    FilterParams, FilterSpec, PARAMS_LEN,
 };
 pub use program::{ChannelProgram, NO_INDEX, ProgramError};
 
@@ -78,4 +79,5 @@ const _: () = {
     assert!(size_of::<Caps>() == 16);
     assert!(size_of::<CryptParams>() == PARAMS_LEN);
     assert!(size_of::<FilterParams>() == PARAMS_LEN);
+    assert!(size_of::<FftParams>() == PARAMS_LEN);
 };

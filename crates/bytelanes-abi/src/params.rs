@@ -290,3 +290,65 @@ impl FilterParams {
         })
     }
 }
+
+/// Smallest `log2n` an `Fft` accepts (`N = 2`).
+pub const FFT_MIN_LOG2N: u8 = 1;
+/// Largest `log2n` an `Fft` accepts (`N = 65536`), the size of the twiddle
+/// table.
+pub const FFT_MAX_LOG2N: u8 = 16;
+
+/// Parameters of `Fft`: 32 bytes.
+///
+/// | Bytes | Field |
+/// | --- | --- |
+/// | 0 | `log2n`: frame length is `2^log2n`, from 1 to 16 |
+/// | 1 | form: 1 = real `i32` input, half-spectrum `(i32, i32)` output |
+/// | 2..32 | reserved, zero |
+#[derive(
+    FromBytes, IntoBytes, KnownLayout, Immutable, Unaligned, Clone, Copy, PartialEq, Eq, Debug,
+)]
+#[repr(C)]
+pub struct FftParams {
+    log2n: u8,
+    form: u8,
+    reserved: [u8; 30],
+}
+
+impl FftParams {
+    /// Real-input FFT of frames of `2^log2n` samples.
+    pub const fn new(log2n: u8) -> Self {
+        FftParams {
+            log2n,
+            form: 1,
+            reserved: [0; 30],
+        }
+    }
+
+    /// `log2n` as stored.
+    pub const fn log2n(&self) -> u8 {
+        self.log2n
+    }
+
+    /// Frame length `N` in samples, if `log2n` is valid.
+    pub const fn frame_len(&self) -> Option<usize> {
+        if self.log2n >= FFT_MIN_LOG2N && self.log2n <= FFT_MAX_LOG2N {
+            Some(1 << self.log2n)
+        } else {
+            None
+        }
+    }
+
+    /// Check `log2n`, form and reserved bytes.
+    pub fn check(&self) -> Result<(), &'static str> {
+        if self.frame_len().is_none() {
+            return Err("fft log2n out of range 1..=16");
+        }
+        if self.form != 1 {
+            return Err("unknown fft form");
+        }
+        if self.reserved != [0; 30] {
+            return Err("fft params reserved bytes are not zero");
+        }
+        Ok(())
+    }
+}
