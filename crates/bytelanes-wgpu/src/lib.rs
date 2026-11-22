@@ -18,8 +18,11 @@
 //! Status checks run on the host in the reference's order; every byte of
 //! data work, including the CRC-32C of each result, runs on the GPU.
 //!
-//! How bytes move between host and GPU is a [`BufferStrategy`]. Agent B
-//! owns the ops and shaders; agent C owns the unified-memory strategy.
+//! How bytes move between host and GPU is a [`BufferStrategy`]:
+//! [`CopyingStrategy`] (the default, for discrete GPUs) or
+//! [`UnifiedMemoryStrategy`] (GPUs that share memory with the CPU, such as
+//! Apple silicon through Metal). Agent B owns the ops and shaders; agent C
+//! owns the unified-memory strategy.
 
 #![forbid(unsafe_code)]
 
@@ -28,9 +31,11 @@ mod gpu;
 mod pool;
 mod strategy;
 mod tables;
+mod unified;
 
 pub use backend::{DEFAULT_QUEUE_DEPTH, Error, WgpuBackend};
 pub use strategy::{BufferStrategy, CopyingStrategy, PendingDownload, ReadRange, Readback};
+pub use unified::UnifiedMemoryStrategy;
 pub use wgpu;
 
 /// Every adapter wgpu finds for `backends`, software ones included.

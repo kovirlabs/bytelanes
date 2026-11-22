@@ -1,6 +1,7 @@
 //! R7 on real GPUs: every golden vector, then 10,000 seeded random cases per
 //! op, on every hardware adapter wgpu finds (Vulkan and DX12 on Windows,
-//! Metal on macOS). `WGPU_BACKEND=vulkan` or `=dx12` narrows the set.
+//! Metal on macOS), once per buffer strategy that applies to the adapter
+//! (copying everywhere; unified memory on Apple silicon too). `WGPU_BACKEND=vulkan` or `=dx12` narrows the set.
 //! `BYTELANES_CASES=<n>` changes the number of random cases per op.
 //!
 //! Machines without a GPU (hosted CI) find no adapter and skip, saying so.
@@ -14,22 +15,7 @@ use std::time::Instant;
 use bytelanes::ChannelBackend;
 use bytelanes::abi::Op;
 use bytelanes::conformance::{self, run_case};
-use bytelanes_wgpu::WgpuBackend;
-
-fn backends() -> Vec<WgpuBackend> {
-    common::adapters()
-        .iter()
-        .map(|a| WgpuBackend::new(a).expect("open adapter"))
-        .collect()
-}
-
-fn describe(b: &WgpuBackend) -> String {
-    let i = b.adapter_info();
-    format!(
-        "{} | {:?} | driver {} {} | {:?}",
-        i.name, i.backend, i.driver, i.driver_info, i.device_type
-    )
-}
+use common::{backends, describe};
 
 #[test]
 fn golden_vectors() {

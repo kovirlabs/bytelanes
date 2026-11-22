@@ -97,6 +97,23 @@
   overlap off and on; CPU reference on 1, half and all logical CPUs.
 - `--sizes` for explicit size lists.
 - Every repetition's completion must equal the CPU reference's.
+### bytelanes-wgpu (M4, agent C)
+
+- `UnifiedMemoryStrategy`: for GPUs that share memory with the CPU (Apple
+  silicon through Metal). Inputs are written into a buffer created mapped,
+  and results are mapped in place, with no staging buffer or GPU copy. Needs
+  `MAPPABLE_PRIMARY_BUFFERS`; `for_adapter` refuses discrete GPUs.
+- `BufferStrategy` gains `required_features` and `alloc`, both with
+  defaults, so `CopyingStrategy` is unchanged.
+- Conformance and large-input tests run once per applicable strategy;
+  `tests/unified.rs` covers the strategy's offsets, lengths and fallback.
+- `strategy_cost` example: copy versus no-copy cost per strategy, written as
+  an atlas run file.
+- **Fix:** the GPU CRC-32C was wrong for inputs of 512 MiB and more on every
+  GPU. The CRC power table wrapped its index assuming a period of 32, which
+  holds for CRC-32 but not CRC-32C (period 31). `Checksum` returned a wrong
+  value with status `Ok`, and results of that size failed their CRC check.
+  New unit and large-input tests cover it.
 
 ### Workspace
 
