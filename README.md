@@ -48,6 +48,7 @@ cargo run -p bytelanes-wgpu --example adapters          # GPUs found, with limit
 cargo test -p bytelanes-wgpu --release                   # golden vectors + 10,000 cases per op, every GPU
 cargo test -p bytelanes-wgpu --release --test large -- --ignored   # inputs of hundreds of MB
 WGPU_BACKEND=dx12 cargo test -p bytelanes-wgpu --release # one API only
+cargo run --release -p bytelanes-wgpu --example strategy_cost -- --out run.json   # copy vs no-copy cost
 ```
 
 Status checks run on the host in the CPU reference's order. All data work,
@@ -57,8 +58,33 @@ whatever the GPU's float hardware does, and 64-bit types work on GPUs
 without 64-bit integer or float support. On a machine with no GPU the GPU
 tests print `SKIPPED` and pass.
 
-Checked so far on one GPU: AMD Radeon RX 7800 XT, Windows, Vulkan and DX12.
-Metal (MacBook) is M4.
+Checked so far on two GPUs: AMD Radeon RX 7800 XT (Windows, Vulkan and
+DX12) and Apple M5 Pro (macOS on AArch64, Metal).
+
+### Buffer strategies
+
+How bytes reach the GPU and come back is a `BufferStrategy`, chosen with
+`WgpuBackend::with_strategy`:
+
+- `CopyingStrategy` (the default) stages every transfer: a CPU copy into a
+  staging buffer and a GPU copy on the way in, a GPU copy into a mappable
+  buffer and a CPU copy on the way out. A discrete GPU on PCIe needs this.
+- `UnifiedMemoryStrategy` is for GPUs that share memory with the CPU, such
+  as Apple silicon through Metal. It writes inputs straight into the GPU's
+  buffer and reads results straight out of it, so the staging buffers and
+  GPU copies go away. One CPU copy per direction remains, because host
+  buffers are ordinary `Vec<u8>`s; removing it would need wgpu's `unsafe`
+  `create_buffer_from_hal`, and this crate forbids `unsafe`.
+  `UnifiedMemoryStrategy::for_adapter` refuses discrete GPUs.
+
+```text
+let strategy = UnifiedMemoryStrategy::for_adapter(&adapter)?;
+let gpu = WgpuBackend::with_strategy(&adapter, Box::new(strategy), DEFAULT_QUEUE_DEPTH)?;
+```
+
+The conformance and large-input tests run every strategy that applies to
+each adapter. What each strategy costs is measured, not stated here: see
+the M4 run file in the `paralanes` atlas.
 
 ### GPU CI
 

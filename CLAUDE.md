@@ -53,7 +53,8 @@ a stub (exits with code 2).
 `bytes.wgsl` appended for byte loads and 2D dispatch indexing), `gpu.rs`
 (device, pipelines, kernel launchers), `backend.rs` (`WgpuBackend`: host-side
 status checks in the CPU reference's order, worker thread), `strategy.rs`
-(`BufferStrategy`, agent C's seam), `tables.rs` (CRC and AES constants
+(`BufferStrategy`, `CopyingStrategy`), `unified.rs`
+(`UnifiedMemoryStrategy`, agent C's module), `tables.rs` (CRC and AES constants
 computed on the host). GPU tests skip with `SKIPPED` when no hardware adapter
 exists; run them with `--release` (debug builds are several times slower).
 
