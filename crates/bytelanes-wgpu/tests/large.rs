@@ -9,7 +9,6 @@
 
 use bytelanes::abi::{BufId, ChannelCmd, ChannelProgram, CmpOp, Extent, FilterSpec};
 use bytelanes::conformance::{Case, SplitMix64, expect_from_cpu, run_case};
-use bytelanes_wgpu::WgpuBackend;
 
 mod common;
 
@@ -46,12 +45,17 @@ fn case(name: &str, cmds: &[ChannelCmd], input: Vec<u8>, out_len: u64, vram: u64
 }
 
 fn run_all(cases: &[Case]) {
-    for a in &common::adapters() {
-        let backend = WgpuBackend::new(a).expect("open adapter");
+    for backend in common::backends() {
         for c in cases {
             backend.clear();
             let r = run_case(&backend, c);
-            eprintln!("{:?} {}: {:?}", a.get_info().backend, c.name, r);
+            eprintln!(
+                "{:?} {} {}: {:?}",
+                backend.adapter_info().backend,
+                backend.strategy_name(),
+                c.name,
+                r
+            );
             assert!(r.is_ok(), "{}: {:?}", c.name, r);
         }
     }

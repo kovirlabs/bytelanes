@@ -1,6 +1,12 @@
 //! Shared by the GPU test files.
 
-use bytelanes_wgpu::{hardware_adapters, wgpu};
+// Each test binary uses only some of these.
+#![allow(dead_code)]
+
+use bytelanes_wgpu::{
+    BufferStrategy, CopyingStrategy, DEFAULT_QUEUE_DEPTH, UnifiedMemoryStrategy, WgpuBackend,
+    hardware_adapters, wgpu,
+};
 
 /// The hardware adapters to test.
 ///
@@ -24,4 +30,41 @@ pub fn adapters() -> Vec<wgpu::Adapter> {
         eprintln!("SKIPPED: no hardware GPU adapter found");
     }
     found
+}
+
+/// Every buffer strategy that applies to `adapter`: always copying, plus
+/// unified memory where the adapter allows it.
+pub fn strategies(adapter: &wgpu::Adapter) -> Vec<Box<dyn BufferStrategy>> {
+    let mut out: Vec<Box<dyn BufferStrategy>> = vec![Box::new(CopyingStrategy)];
+    if let Ok(s) = UnifiedMemoryStrategy::for_adapter(adapter) {
+        out.push(Box::new(s));
+    }
+    out
+}
+
+/// A backend for every hardware adapter and every strategy that applies to
+/// it, so each strategy has to reproduce the reference on its own.
+pub fn backends() -> Vec<WgpuBackend> {
+    adapters()
+        .iter()
+        .flat_map(|a| {
+            strategies(a).into_iter().map(move |s| {
+                WgpuBackend::with_strategy(a, s, DEFAULT_QUEUE_DEPTH).expect("open adapter")
+            })
+        })
+        .collect()
+}
+
+/// Adapter, API, driver, device type and strategy, for test output.
+pub fn describe(b: &WgpuBackend) -> String {
+    let i = b.adapter_info();
+    format!(
+        "{} | {:?} | driver {} {} | {:?} | {}",
+        i.name,
+        i.backend,
+        i.driver,
+        i.driver_info,
+        i.device_type,
+        b.strategy_name()
+    )
 }
