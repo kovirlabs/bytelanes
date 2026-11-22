@@ -8,7 +8,7 @@ use bytelanes::cpu::CpuBackend;
 #[cfg_attr(miri, ignore = "reads files; covered natively")]
 fn committed_vectors_replay_on_cpu() {
     let cases = load_vectors(vectors_dir()).expect("vectors load");
-    assert!(cases.len() > 100, "only {} cases", cases.len());
+    assert!(cases.len() >= 170, "only {} cases", cases.len());
     for case in &cases {
         let backend = CpuBackend::new();
         if let Err(m) = run_case(&backend, case) {

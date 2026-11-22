@@ -287,3 +287,8 @@ fn nvme_extent_is_unsupported_on_cpu() {
     .unwrap();
     assert_eq!(b.run(&p, Tag(0)).status(), Some(Status::UnsupportedExtent));
 }
+
+#[test]
+fn harness_random_fft() {
+    run_random(Op::Fft);
+}

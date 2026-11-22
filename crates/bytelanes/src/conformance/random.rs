@@ -54,7 +54,7 @@ const IN: BufId = BufId(1);
 const OUT: BufId = BufId(2);
 const KEY_SLOT: u32 = 3;
 
-/// A random case for `op` (`Checksum`, `Encrypt`, `Decrypt` or `Filter`)
+/// A random case for `op` (`Checksum`, `Encrypt`, `Decrypt`, `Filter` or `Fft`)
 /// from `seed`. Inputs are up to 4 KiB, placed at a random offset in the
 /// input buffer; the output is written at a random offset in a buffer with
 /// room to spare. Expected results come from the CPU reference.
@@ -69,6 +69,7 @@ pub fn random_case(op: Op, seed: u64) -> Case {
     let slack = rng.below(64);
 
     let mut elem = ElemType::U32;
+    let mut log2n = 1u8;
     let (input, cmd_for, out_len, keys) = match op {
         Op::Checksum => {
             let n = rng.below(4097) as usize;
@@ -95,6 +96,13 @@ pub fn random_case(op: Op, seed: u64) -> Case {
             let input = column(&mut rng, elem, rows);
             (input, None, rows as u64 * 4, Vec::new())
         }
+        Op::Fft => {
+            log2n = 1 + rng.below(12) as u8;
+            let frames = 1 + rng.below(3) as usize;
+            let input = fft_samples(&mut rng, frames << log2n);
+            let out = crate::cpu::fft::output_len(log2n, frames) as u64;
+            (input, None, out, Vec::new())
+        }
         _ => panic!("random_case: {op:?} has no defined semantics"),
     };
 
@@ -112,6 +120,7 @@ pub fn random_case(op: Op, seed: u64) -> Case {
         Op::Checksum => ChannelCmd::checksum(src, dst),
         Op::Encrypt => ChannelCmd::encrypt(src, dst, KEY_SLOT, cmd_for.unwrap_or_default()),
         Op::Decrypt => ChannelCmd::decrypt(src, dst, KEY_SLOT, cmd_for.unwrap_or_default()),
+        Op::Fft => ChannelCmd::fft(src, dst, log2n),
         _ => ChannelCmd::filter(src, dst, filter_spec(&mut rng, elem, &input)),
     };
     let program = ChannelProgram::from_commands(&[cmd]).expect("random program is valid");
@@ -214,4 +223,33 @@ pub(super) fn filter_spec(rng: &mut SplitMix64, elem: ElemType, column: &[u8]) -
         a,
         b: if cmp == CmpOp::Between { b } else { 0 },
     }
+}
+
+/// `count` little-endian `i32` samples for `Fft`: a mix of in-range values,
+/// out-of-range values that saturate, the limits, small values and tones.
+pub(super) fn fft_samples(rng: &mut SplitMix64, count: usize) -> Vec<u8> {
+    let limit = i64::from(crate::cpu::fft::SAMPLE_LIMIT);
+    let style = rng.below(4);
+    let period = 2 + rng.below(61) as i64;
+    let amp = 1 + rng.below(limit as u64) as i64;
+    let mut out = Vec::with_capacity(count * 4);
+    for t in 0..count as i64 {
+        let v: i64 = match style {
+            0 => rng.below(2 * limit as u64 + 1) as i64 - limit,
+            1 => rng.next_u64() as u32 as i32 as i64,
+            2 => {
+                // Square wave: integer-only, so it is the same everywhere.
+                if (t / period) % 2 == 0 { amp } else { -amp }
+            }
+            _ => match rng.below(5) {
+                0 => limit,
+                1 => -limit,
+                2 => i64::from(i32::MAX),
+                3 => i64::from(i32::MIN),
+                _ => rng.below(2001) as i64 - 1000,
+            },
+        };
+        out.extend_from_slice(&(v as i32).to_le_bytes());
+    }
+    out
 }
