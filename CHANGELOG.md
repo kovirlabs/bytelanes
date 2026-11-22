@@ -54,8 +54,35 @@
   time.
 - The CRC-32C chunk pass reads whole words with slicing-by-4 tables, instead
   of a byte at a time.
+- **Device buffers are pooled.** Programs whose device buffers added up to
+  more than about 128 MiB paid an extra 10 to 13 ms per call, on Vulkan and
+  DX12 alike (filter and encrypt at 64 MiB, checksum at 128 MiB).
+  - Scratch buffers now come from a pool in `Gpu`, and inputs from a pool
+    in `CopyingStrategy`, via the new provided method
+    `BufferStrategy::recycle`.
+  - Reused scratch buffers are cleared in the same submission as the
+    kernels that use them.
+- **Consecutive programs overlap** (on by default;
+  `WgpuBackend::set_overlap`).
+  - The worker issues the next program before finishing the previous one.
+  - A program that reads host bytes the in-flight program writes waits for
+    it.
+  - Completions stay in order.
+  - New provided methods `BufferStrategy::begin_download` and
+    `finish_download`, with `ReadRange` and `PendingDownload`.
+  - New `tests/overlap.rs`.
 - Measured effect: see the paralanes atlas (`atlas/crossover.md`), which
-  keeps the untuned runs for comparison.
+  keeps the earlier runs for comparison.
+
+### bytelanes (M5, agent B)
+
+- **The CPU reference reads sources in place and writes AES output
+  directly.** It used to copy each source and result through fresh `Vec`s,
+  and to CRC every command.
+  - Measured: AES-256-CTR through `CpuBackend` went from 1.88 to 5.32 GB/s
+    on one Ryzen core.
+  - Outputs and statuses are unchanged.
+  - New `tests/same_buffer.rs`.
 
 ### bytelanes-bench (M5)
 
@@ -66,6 +93,9 @@
 - `commitlog`: a transactional workload of generated payment records, with
   a write path (fraud filter plus encryption) and a read path (chained
   decrypt and filter).
+- `stream`: throughput with 16 commit-log batches in flight; GPU with
+  overlap off and on; CPU reference on 1, half and all logical CPUs.
+- `--sizes` for explicit size lists.
 - Every repetition's completion must equal the CPU reference's.
 
 ### Workspace

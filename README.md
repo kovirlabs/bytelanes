@@ -57,6 +57,12 @@ whatever the GPU's float hardware does, and 64-bit types work on GPUs
 without 64-bit integer or float support. On a machine with no GPU the GPU
 tests print `SKIPPED` and pass.
 
+Device buffers and transfer staging are pooled and reused across programs.
+Consecutive programs overlap: the next program's GPU work is submitted
+before the previous program's result is copied out. A program that reads
+host bytes the previous one writes waits for it, so results never change.
+`WgpuBackend::set_overlap(false)` turns overlap off.
+
 Checked so far on one GPU: AMD Radeon RX 7800 XT, Windows, Vulkan and DX12.
 Metal (MacBook) is M4.
 
@@ -91,7 +97,13 @@ one run file per op to `../paralanes/atlas/runs/<machine>/`.
 ```text
 cargo run --release -p bytelanes-bench -- ops       --machine ryzen --host-link "PCIe 3.0 x16" [--note ...]
 cargo run --release -p bytelanes-bench -- commitlog --machine ryzen --host-link "PCIe 3.0 x16"
+cargo run --release -p bytelanes-bench -- stream    --machine ryzen --host-link "PCIe 3.0 x16"
+cargo run --release -p bytelanes-bench -- ops ... --ops filter --sizes 16M,24M,32M,64M   # explicit sizes
 ```
+
+`stream` measures throughput: 16 commit-log batches in flight per
+repetition, the GPU with program overlap off and on, and the CPU reference on
+1, half and all logical CPUs.
 
 - `ops` runs checksum, encrypt, decrypt and filter from 64 B to 256 MiB.
 - `commitlog` is a transactional workload: batches of generated 256-byte
