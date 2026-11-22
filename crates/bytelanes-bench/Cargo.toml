@@ -1,6 +1,6 @@
 [package]
 name = "bytelanes-bench"
-description = "GPU versus CPU benchmark per op across input sizes"
+description = "GPU versus CPU benchmark per op across input sizes, and a commit-log workload"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,9 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+bytelanes = { version = "0.0.1", path = "../bytelanes" }
+bytelanes-wgpu = { version = "0.0.1", path = "../bytelanes-wgpu" }
+cpu-time = "1.0.0"
+serde_json = "1.0.154"
