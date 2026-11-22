@@ -69,7 +69,7 @@ fn random_cases() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(10_000);
     for backend in backends() {
-        for op in [Op::Checksum, Op::Encrypt, Op::Decrypt, Op::Filter] {
+        for op in [Op::Checksum, Op::Encrypt, Op::Decrypt, Op::Filter, Op::Fft] {
             let start = Instant::now();
             let mut failures = Vec::new();
             for seed in 0..n {

@@ -230,10 +230,8 @@ impl Drop for WgpuBackend {
     }
 }
 
-/// The ops this backend runs on the GPU. `Fft` (added to the op format in
-/// M7) is not implemented in WGSL yet, so it is not listed and completes
-/// with `UnsupportedOp`.
-pub const GPU_OPS: [Op; 4] = [Op::Checksum, Op::Encrypt, Op::Decrypt, Op::Filter];
+/// The ops this backend runs on the GPU: every op with defined semantics.
+pub const GPU_OPS: [Op; 5] = [Op::Checksum, Op::Encrypt, Op::Decrypt, Op::Filter, Op::Fft];
 
 impl ChannelBackend for WgpuBackend {
     fn capabilities(&self) -> Caps {
@@ -618,7 +616,18 @@ fn run_cmd(gpu: &Gpu, st: &mut State, cmd: &ChannelCmd, fed: Option<Data>) -> Re
             gpu.filter(&input, &filter_args(&spec))
                 .map_err(device_error)?
         }
-        Op::Read | Op::Write | Op::Decompress | Op::Compress | Op::Score | Op::Fft => {
+        Op::Fft => {
+            // Validation already checked log2n is in range.
+            let log2n = u32::from(cmd.fft_params().log2n());
+            if input.len % (4u64 << log2n) != 0 {
+                return Err(Status::InvalidLength.into());
+            }
+            if !gpu.fits(Gpu::fft_work_len(input.len)) {
+                return Err(Status::DeviceError.into());
+            }
+            gpu.fft(&input, log2n)
+        }
+        Op::Read | Op::Write | Op::Decompress | Op::Compress | Op::Score => {
             return Err(Status::UnsupportedOp.into());
         }
     };
