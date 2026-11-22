@@ -1,0 +1,28 @@
+{
+  "format": 1,
+  "name": "fft/random-log2n-7",
+  "description": "random, saturating, square-wave or extreme samples",
+  "program": "program.bin",
+  "host": [
+    {
+      "buf": 1,
+      "file": "host-1.bin"
+    },
+    {
+      "buf": 2,
+      "zeroed": 1040
+    }
+  ],
+  "vram": [],
+  "keys": [],
+  "expect": {
+    "status": "Ok",
+    "status_code": 0,
+    "cmd_index": 0,
+    "bytes": 1040,
+    "crc": 3647587214,
+    "output_buf": 2,
+    "output_offset": 0,
+    "output": "expected.bin"
+  }
+}

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased (M7, contract change)
+
+### bytelanes-abi
+
+- `Op::Fft` (code 10) and `FftParams`: a fixed-point FFT of real `i32` frames
+  of `2^log2n` samples (`log2n` 1 to 16) into half-spectrum `(i32, i32)`
+  bins. The algorithm, including every rounding step, is normative, so GPU
+  backends reproduce it byte for byte; WGSL does not guarantee exact float
+  arithmetic, so a float FFT could not be.
+
+### bytelanes
+
+- `cpu::fft`: the reference FFT and its Q30 twiddle table, built from a
+  Taylor series with plain `f64` arithmetic so it is identical on every
+  platform.
+- `CpuBackend` runs `Fft`; `random_case` covers it.
+
+### vectors
+
+- 31 new cases: 30 under `fft/` and `program/decrypt-fft-checksum`. Adds
+  `fft/twiddles.bin`. The 139 M1 cases are unchanged.
+
 ## 0.0.1 (unreleased)
 
 First version, published to hold the crate names. No GPU backend and no
