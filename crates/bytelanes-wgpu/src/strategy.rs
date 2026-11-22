@@ -65,6 +65,37 @@ pub trait BufferStrategy: Send + Sync {
         Ok(())
     }
 
+    /// Starts reading `parts` back: submits the copies but does not wait, so
+    /// the caller can queue more GPU work before [`finish_download`]
+    /// completes it. The default defers everything to `finish_download`.
+    ///
+    /// [`finish_download`]: BufferStrategy::finish_download
+    fn begin_download(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        parts: &[ReadRange<'_>],
+    ) -> Result<PendingDownload, String> {
+        let _ = (device, queue);
+        Ok(PendingDownload::deferred(parts))
+    }
+
+    /// Completes a readback from `begin_download`: waits for it and fills
+    /// `dsts`, one per part, each as long as its part.
+    fn finish_download(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pending: PendingDownload,
+        dsts: &mut [&mut [u8]],
+    ) -> Result<(), String> {
+        match pending.0 {
+            Pending::Empty => Ok(()),
+            Pending::Deferred(parts) => deferred(self, device, queue, &parts, dsts),
+            Pending::Staged(s) => s.finish(device, dsts).map(drop),
+        }
+    }
+
     /// Hands back a buffer `upload` returned, once every command using it
     /// has been submitted. A strategy may reuse it for a later upload (queue
     /// order makes that safe); the default drops it.
@@ -290,23 +321,42 @@ impl BufferStrategy for CopyingStrategy {
         queue: &wgpu::Queue,
         parts: &mut [Readback<'_>],
     ) -> Result<(), String> {
+        let ranges: Vec<ReadRange<'_>> = parts
+            .iter()
+            .map(|p| ReadRange {
+                buffer: p.buffer,
+                offset: p.offset,
+                len: p.dst.len() as u64,
+            })
+            .collect();
+        let pending = self.begin_download(device, queue, &ranges)?;
+        let mut dsts: Vec<&mut [u8]> = parts.iter_mut().map(|p| &mut *p.dst).collect();
+        self.finish_download(device, queue, pending, &mut dsts)
+    }
+
+    fn begin_download(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        parts: &[ReadRange<'_>],
+    ) -> Result<PendingDownload, String> {
         // Each part's slot in the staging buffer, rounded up to the 4-byte
         // copy alignment.
-        let mut at = Vec::with_capacity(parts.len());
+        let mut slots = Vec::with_capacity(parts.len());
         let mut total = 0u64;
-        for p in parts.iter() {
-            at.push(total);
-            total += (p.dst.len() as u64).next_multiple_of(4);
+        for p in parts {
+            slots.push((total, p.len));
+            total += p.len.next_multiple_of(4);
         }
         if total == 0 {
-            return Ok(());
+            return Ok(PendingDownload(Pending::Empty));
         }
         let staging = self.take(device, total);
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("bytelanes readback"),
         });
-        for (p, &slot) in parts.iter().zip(&at) {
-            let size = (p.dst.len() as u64).next_multiple_of(4);
+        for (p, &(slot, len)) in parts.iter().zip(&slots) {
+            let size = len.next_multiple_of(4);
             if size > 0 {
                 enc.copy_buffer_to_buffer(p.buffer, p.offset, &staging, slot, size);
             }
@@ -318,27 +368,122 @@ impl BufferStrategy for CopyingStrategy {
         staging.map_async(wgpu::MapMode::Read, ..mapped, move |r| {
             let _ = tx.send(r);
         });
+        Ok(PendingDownload(Pending::Staged(Staged {
+            staging,
+            slots,
+            mapped,
+            index,
+            rx,
+        })))
+    }
+
+    fn finish_download(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pending: PendingDownload,
+        dsts: &mut [&mut [u8]],
+    ) -> Result<(), String> {
+        match pending.0 {
+            Pending::Empty => Ok(()),
+            Pending::Deferred(parts) => deferred(self, device, queue, &parts, dsts),
+            Pending::Staged(s) => {
+                let staging = s.finish(device, dsts)?;
+                self.give(staging);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A range of a GPU buffer to read back.
+pub struct ReadRange<'a> {
+    /// The GPU buffer to read.
+    pub buffer: &'a wgpu::Buffer,
+    /// Byte offset in `buffer`; a multiple of 4.
+    pub offset: u64,
+    /// Bytes to read.
+    pub len: u64,
+}
+
+/// A readback started by [`BufferStrategy::begin_download`] and completed
+/// by [`BufferStrategy::finish_download`].
+pub struct PendingDownload(Pending);
+
+impl PendingDownload {
+    /// A readback that does all its work in `finish_download`, which is
+    /// what the default `begin_download` returns.
+    pub fn deferred(parts: &[ReadRange<'_>]) -> Self {
+        PendingDownload(Pending::Deferred(
+            parts
+                .iter()
+                .map(|p| (p.buffer.clone(), p.offset, p.len))
+                .collect(),
+        ))
+    }
+}
+
+enum Pending {
+    Empty,
+    Deferred(Vec<(wgpu::Buffer, u64, u64)>),
+    Staged(Staged),
+}
+
+/// Copies already submitted into a staging buffer, with its map requested.
+struct Staged {
+    staging: wgpu::Buffer,
+    /// (offset in `staging`, length) per part.
+    slots: Vec<(u64, u64)>,
+    mapped: u64,
+    index: wgpu::SubmissionIndex,
+    rx: mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
+}
+
+impl Staged {
+    /// Waits for the copies, fills `dsts` and returns the unmapped staging
+    /// buffer.
+    fn finish(self, device: &wgpu::Device, dsts: &mut [&mut [u8]]) -> Result<wgpu::Buffer, String> {
         device
             .poll(wgpu::PollType::Wait {
-                submission_index: Some(index),
+                submission_index: Some(self.index),
                 timeout: None,
             })
             .map_err(|e| format!("device poll failed: {e}"))?;
-        rx.recv()
+        self.rx
+            .recv()
             .map_err(|_| "map callback never ran".to_owned())?
             .map_err(|e| format!("buffer map failed: {e}"))?;
         {
-            let view = staging
-                .get_mapped_range(..mapped)
+            let view = self
+                .staging
+                .get_mapped_range(..self.mapped)
                 .map_err(|e| format!("mapped range: {e:?}"))?;
-            for (p, &slot) in parts.iter_mut().zip(&at) {
-                let n = p.dst.len();
-                p.dst
-                    .copy_from_slice(&view[slot as usize..slot as usize + n]);
+            for (dst, &(slot, len)) in dsts.iter_mut().zip(&self.slots) {
+                let (slot, len) = (slot as usize, len as usize);
+                dst[..len].copy_from_slice(&view[slot..slot + len]);
             }
         }
-        staging.unmap();
-        self.give(staging);
-        Ok(())
+        self.staging.unmap();
+        Ok(self.staging)
     }
+}
+
+/// Completes a deferred readback through `download_into`.
+fn deferred<S: BufferStrategy + ?Sized>(
+    s: &S,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    parts: &[(wgpu::Buffer, u64, u64)],
+    dsts: &mut [&mut [u8]],
+) -> Result<(), String> {
+    let mut reads: Vec<Readback<'_>> = parts
+        .iter()
+        .zip(dsts.iter_mut())
+        .map(|((buffer, offset, _), dst)| Readback {
+            buffer,
+            offset: *offset,
+            dst,
+        })
+        .collect();
+    s.download_into(device, queue, &mut reads)
 }

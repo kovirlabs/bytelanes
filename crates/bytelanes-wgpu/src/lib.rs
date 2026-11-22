@@ -30,7 +30,7 @@ mod strategy;
 mod tables;
 
 pub use backend::{DEFAULT_QUEUE_DEPTH, Error, WgpuBackend};
-pub use strategy::{BufferStrategy, CopyingStrategy, Readback};
+pub use strategy::{BufferStrategy, CopyingStrategy, PendingDownload, ReadRange, Readback};
 pub use wgpu;
 
 /// Every adapter wgpu finds for `backends`, software ones included.

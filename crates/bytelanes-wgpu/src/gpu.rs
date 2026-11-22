@@ -5,7 +5,7 @@ use wgpu::util::DeviceExt;
 use std::sync::Mutex;
 
 use crate::pool::DevicePool;
-use crate::strategy::{BufferStrategy, Readback};
+use crate::strategy::{BufferStrategy, PendingDownload, ReadRange};
 use crate::tables;
 
 /// Bytes each thread of the CRC `chunks` pass reads.
@@ -326,10 +326,23 @@ impl Gpu {
             .download(&self.device, &self.queue, buf, offset, len)
     }
 
-    /// Reads several ranges into host memory with one wait.
-    pub(crate) fn download_into(&self, parts: &mut [Readback<'_>]) -> Result<(), String> {
+    /// Submits the copies for a readback without waiting.
+    pub(crate) fn begin_download(
+        &self,
+        parts: &[ReadRange<'_>],
+    ) -> Result<PendingDownload, String> {
         self.strategy
-            .download_into(&self.device, &self.queue, parts)
+            .begin_download(&self.device, &self.queue, parts)
+    }
+
+    /// Waits for a readback from `begin_download` and fills `dsts`.
+    pub(crate) fn finish_download(
+        &self,
+        pending: PendingDownload,
+        dsts: &mut [&mut [u8]],
+    ) -> Result<(), String> {
+        self.strategy
+            .finish_download(&self.device, &self.queue, pending, dsts)
     }
 
     fn uniform(&self, words: &[u32]) -> wgpu::Buffer {
