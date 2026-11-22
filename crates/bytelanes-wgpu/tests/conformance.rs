@@ -11,6 +11,7 @@ mod common;
 
 use std::time::Instant;
 
+use bytelanes::ChannelBackend;
 use bytelanes::abi::Op;
 use bytelanes::conformance::{self, run_case};
 use bytelanes_wgpu::WgpuBackend;
@@ -35,8 +36,12 @@ fn golden_vectors() {
     let cases = conformance::load_vectors(conformance::vectors_dir()).expect("load vectors");
     for backend in backends() {
         let start = Instant::now();
+        // Cases using ops this backend does not list yet (Fft, until a WGSL
+        // FFT exists) are skipped and counted.
+        let caps = backend.capabilities();
+        let (runnable, skipped): (Vec<_>, Vec<_>) = cases.iter().partition(|c| c.runs_on(&caps));
         // Each case starts from an empty backend, as with a fresh CpuBackend.
-        let failures: Vec<String> = cases
+        let failures: Vec<String> = runnable
             .iter()
             .filter_map(|c| {
                 backend.clear();
@@ -46,9 +51,10 @@ fn golden_vectors() {
             })
             .collect();
         eprintln!(
-            "{}: {} golden cases, {} failed, {:.1} s",
+            "{}: {} golden cases run, {} skipped (unsupported ops), {} failed, {:.1} s",
             describe(&backend),
-            cases.len(),
+            runnable.len(),
+            skipped.len(),
             failures.len(),
             start.elapsed().as_secs_f64()
         );

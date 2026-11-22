@@ -301,3 +301,29 @@ proptest! {
         prop_assert_eq!(Extent::read_from_bytes(e.as_bytes()).unwrap(), e);
     }
 }
+
+#[test]
+fn fft_params_rules() {
+    let hin = Extent::host(H_IN, 0, 64);
+    let hout = Extent::host(H_OUT, 0, 64);
+    for log2n in FFT_MIN_LOG2N..=FFT_MAX_LOG2N {
+        let cmd = ChannelCmd::fft(hin, hout, log2n);
+        assert_eq!(cmd.op(), Some(Op::Fft));
+        assert_eq!(cmd.fft_params().frame_len(), Some(1 << log2n));
+        ChannelProgram::from_commands(&[cmd]).unwrap();
+        // Layout: log2n at params byte 0, form 1 at byte 1.
+        assert_eq!(&cmd.as_bytes()[72..74], &[log2n, 1]);
+    }
+    for bad in [0u8, 17, 255] {
+        invalid(&[ChannelCmd::fft(hin, hout, bad)]);
+    }
+    let mut p = [0u8; PARAMS_LEN];
+    p[0] = 4;
+    p[1] = 2; // unknown form
+    invalid(&[ChannelCmd::new(Op::Fft, Flags::NONE, hin, hout, p)]);
+    p[1] = 1;
+    p[31] = 1; // reserved byte
+    invalid(&[ChannelCmd::new(Op::Fft, Flags::NONE, hin, hout, p)]);
+    assert!(Op::Fft.is_defined());
+    assert_eq!(Op::from_code(10), Some(Op::Fft));
+}

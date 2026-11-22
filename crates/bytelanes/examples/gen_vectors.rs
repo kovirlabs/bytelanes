@@ -22,6 +22,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let cases = golden_cases();
     write_vectors(&dir, &cases)?;
+    fs::create_dir_all(dir.join("fft"))?;
+    fs::write(
+        dir.join("fft/twiddles.bin"),
+        bytelanes::cpu::fft::twiddle_bytes(),
+    )?;
     println!("wrote {} cases to {}", cases.len(), dir.display());
     Ok(())
 }

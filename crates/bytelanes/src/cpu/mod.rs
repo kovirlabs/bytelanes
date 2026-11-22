@@ -6,6 +6,7 @@
 //! against a fast CPU.
 
 mod backend;
+pub mod fft;
 pub mod ops;
 
 pub use backend::CpuBackend;

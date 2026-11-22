@@ -4,9 +4,11 @@
 ///
 /// Codes are stable wire values; `0` is never a valid op. Ops without M1
 /// semantics (`Read`, `Write`, `Decompress`, `Compress`, `Score`) are reserved
-/// names: their parameters must be zero and every M1 backend reports
-/// [`Status::UnsupportedOp`](crate::Status::UnsupportedOp) for them. `Fft` is
-/// added in M7 through a contract pull request.
+/// names: their parameters must be zero and every backend reports
+/// [`Status::UnsupportedOp`](crate::Status::UnsupportedOp) for them. `Fft`
+/// was added in M7 through a contract pull request; a backend built before
+/// it rejects code 10 as `InvalidProgram`, and [`Caps`](crate::Caps) says
+/// which ops a backend runs.
 ///
 /// # Semantics
 ///
@@ -32,6 +34,37 @@
 ///   matching row indices in ascending order as little-endian `u32`s, 4 bytes
 ///   per match. Floats compare as IEEE 754: `NaN` matches only
 ///   [`CmpOp::Ne`](crate::CmpOp::Ne), and `-0.0` equals `0.0`.
+/// - **`Fft`**: fixed-point FFT of real samples, exact in integer arithmetic
+///   so every backend produces the same bytes. `src` is a whole number of
+///   frames of `N = 2^log2n` little-endian `i32` samples
+///   ([`FftParams`](crate::FftParams)); otherwise `InvalidLength`. Each frame
+///   is transformed on its own and writes bins `0..=N/2` as pairs of
+///   little-endian `i32` (`re`, `im`), 8 bytes per bin, frames in order. The
+///   result approximates the DFT divided by `N`. The algorithm, which is
+///   normative down to its rounding, is:
+///
+///   ```text
+///   W[t] = (wr, wi), t in 0..32768: the Q30 twiddle table (see below)
+///   for each frame x[0..N]:
+///     a[i] = (sat(x[bitrev_log2n(i)]), 0)        sat clamps to [-2^30, 2^30]
+///     for s in 1..=log2n:
+///       m = 2^s; h = m / 2; stride = 65536 / m
+///       for k in (0..N).step_by(m), for j in 0..h:
+///         (wr, wi) = W[j * stride]
+///         (ur, ui) = a[k + j]; (br, bi) = a[k + j + h]
+///         tr = (wr*br - wi*bi + 2^29) >> 30        all products and sums in i64;
+///         ti = (wr*bi + wi*br + 2^29) >> 30        >> is an arithmetic shift (floor)
+///         a[k + j]     = ((ur + tr) >> 1, (ui + ti) >> 1)
+///         a[k + j + h] = ((ur - tr) >> 1, (ui - ti) >> 1)
+///     write a[0..=N/2]
+///   ```
+///
+///   Every intermediate fits in `i32` because inputs are clamped to
+///   `±2^30` and each butterfly halves its output. The twiddle table holds
+///   `W[t] = (round(cos(2πt/65536) * 2^30), round(-sin(2πt/65536) * 2^30))`;
+///   the committed bytes in `vectors/fft/twiddles.bin` (32768 pairs of
+///   little-endian `i32`) are normative, and `bytelanes::cpu::fft::twiddles`
+///   computes the same table.
 ///
 /// If `dst` is shorter than the result, the command fails with
 /// [`Status::DstTooSmall`](crate::Status::DstTooSmall) and the completion's
@@ -51,7 +84,8 @@
 ///    chain), then for `dst`.
 /// 4. `UnknownKey`: a crypt command's key slot is empty.
 /// 5. `InvalidLength`: a `Filter` input is not a whole number of elements or
-///    has more than 2^32 of them, or a result would exceed `u32::MAX` bytes.
+///    has more than 2^32 of them, an `Fft` input is not a whole number of
+///    frames, or a result would exceed `u32::MAX` bytes.
 /// 6. `DstTooSmall`.
 ///
 /// Commands before the failing one may already have written their `dst`.
@@ -76,11 +110,13 @@ pub enum Op {
     Filter = 8,
     /// Reserved: inline model inference.
     Score = 9,
+    /// Fixed-point FFT of real `i32` frames into half-spectrum bins.
+    Fft = 10,
 }
 
 impl Op {
     /// Every op, in code order.
-    pub const ALL: [Op; 9] = [
+    pub const ALL: [Op; 10] = [
         Op::Read,
         Op::Write,
         Op::Decompress,
@@ -90,10 +126,11 @@ impl Op {
         Op::Encrypt,
         Op::Filter,
         Op::Score,
+        Op::Fft,
     ];
 
     /// The ops with defined semantics in this format version.
-    pub const DEFINED: [Op; 4] = [Op::Checksum, Op::Decrypt, Op::Encrypt, Op::Filter];
+    pub const DEFINED: [Op; 5] = [Op::Checksum, Op::Decrypt, Op::Encrypt, Op::Filter, Op::Fft];
 
     /// Wire code of this op.
     pub const fn code(self) -> u16 {
@@ -112,6 +149,7 @@ impl Op {
             7 => Op::Encrypt,
             8 => Op::Filter,
             9 => Op::Score,
+            10 => Op::Fft,
             _ => return None,
         })
     }
@@ -123,7 +161,10 @@ impl Op {
 
     /// Whether this op has semantics defined in this format version.
     pub const fn is_defined(self) -> bool {
-        matches!(self, Op::Checksum | Op::Decrypt | Op::Encrypt | Op::Filter)
+        matches!(
+            self,
+            Op::Checksum | Op::Decrypt | Op::Encrypt | Op::Filter | Op::Fft
+        )
     }
 }
 

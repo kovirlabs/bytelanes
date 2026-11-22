@@ -4,7 +4,8 @@ use zerocopy::byteorder::little_endian::U16;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 use crate::{
-    CryptParams, Extent, ExtentRef, FilterParams, FilterSpec, Flags, KeySlot, Op, PARAMS_LEN,
+    CryptParams, Extent, ExtentRef, FftParams, FilterParams, FilterSpec, Flags, KeySlot, Op,
+    PARAMS_LEN,
 };
 
 /// One step of a channel program: 104 bytes.
@@ -66,6 +67,13 @@ impl ChannelCmd {
         ChannelCmd::new(Op::Filter, Flags::NONE, src, dst, to_params(p.as_bytes()))
     }
 
+    /// Fixed-point FFT of the `i32` frames in `src`, `2^log2n` samples each;
+    /// half-spectrum bins into `dst`.
+    pub fn fft(src: Extent, dst: Extent, log2n: u8) -> Self {
+        let p = FftParams::new(log2n);
+        ChannelCmd::new(Op::Fft, Flags::NONE, src, dst, to_params(p.as_bytes()))
+    }
+
     /// The same command with [`Flags::CHAIN`] set.
     pub fn chained(mut self) -> Self {
         self.flags = U16::new(self.flags.get() | Flags::CHAIN.bits());
@@ -107,6 +115,11 @@ impl ChannelCmd {
         CryptParams::read_from_bytes(&self.params).unwrap_or_else(|_| unreachable_params())
     }
 
+    /// Parameters as [`FftParams`] (meaningful for `Fft`).
+    pub fn fft_params(&self) -> FftParams {
+        FftParams::read_from_bytes(&self.params).unwrap_or_else(|_| unreachable_params())
+    }
+
     /// Parameters decoded as a [`FilterSpec`] (meaningful for `Filter`).
     pub fn filter_spec(&self) -> Result<FilterSpec, &'static str> {
         FilterParams::read_from_bytes(&self.params)
@@ -136,6 +149,7 @@ impl ChannelCmd {
             Op::Filter => {
                 self.filter_spec()?;
             }
+            Op::Fft => self.fft_params().check()?,
             Op::Read | Op::Write | Op::Decompress | Op::Compress | Op::Score => {
                 if self.params != [0; PARAMS_LEN] {
                     return Err("params of a reserved op are not zero");
