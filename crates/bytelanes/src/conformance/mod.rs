@@ -31,7 +31,7 @@ pub use files::{VectorError, load_vectors, vectors_dir, write_vectors};
 pub use golden::golden_cases;
 pub use random::{SplitMix64, random_case};
 
-use crate::abi::{BufId, ChannelProgram, Completion, KeySlot, Status, Tag};
+use crate::abi::{BufId, Caps, ChannelProgram, Completion, KeySlot, Op, Status, Tag};
 use crate::{Buffers, ChannelBackend};
 
 /// One conformance case.
@@ -51,6 +51,29 @@ pub struct Case {
     pub keys: Vec<(KeySlot, [u8; 32])>,
     /// The expected outcome.
     pub expect: Expect,
+}
+
+impl Case {
+    /// The ops with defined semantics that this case's commands use.
+    pub fn ops(&self) -> Vec<Op> {
+        let mut ops: Vec<Op> = self
+            .program
+            .commands()
+            .iter()
+            .filter_map(|c| c.op())
+            .filter(|op| op.is_defined())
+            .collect();
+        ops.sort_unstable();
+        ops.dedup();
+        ops
+    }
+
+    /// Whether a backend with `caps` supports every op this case uses. A
+    /// backend that has not implemented an op yet skips the other cases
+    /// (and says how many it skipped) rather than failing them.
+    pub fn runs_on(&self, caps: &Caps) -> bool {
+        self.ops().iter().all(|&op| caps.supports(op))
+    }
 }
 
 /// Expected outcome of a [`Case`].

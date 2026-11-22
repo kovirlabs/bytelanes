@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased (M7, contract change)
+## Unreleased
 
-### bytelanes-abi
+### bytelanes-abi (M7, contract change)
 
 - `Op::Fft` (code 10) and `FftParams`: a fixed-point FFT of real `i32` frames
   of `2^log2n` samples (`log2n` 1 to 16) into half-spectrum `(i32, i32)`
@@ -19,8 +19,27 @@
 
 ### vectors
 
-- 31 new cases: 30 under `fft/` and `program/decrypt-fft-checksum`. Adds
+- 32 new cases: 30 under `fft/`, `program/decrypt-fft-checksum` and
+  `invalid/fft-log2n-17`. Adds
   `fft/twiddles.bin`. The 139 M1 cases are unchanged.
+
+### bytelanes-wgpu (M3, agent B)
+
+- `WgpuBackend`: a `ChannelBackend` and `Buffers` implementation on wgpu 30
+  that reproduces the CPU reference byte for byte. Checksum (CRC-32C, chunk
+  CRCs combined on the GPU), Encrypt and Decrypt (AES-256-CTR), Filter (all
+  six element types through integer order keys; count, scan and scatter
+  passes). Every result's CRC-32C is computed on the GPU. Programs run in
+  order on a worker thread; `submit` and `poll` do not wait for the GPU.
+- `BufferStrategy` trait and `CopyingStrategy`, the seam for a
+  unified-memory strategy.
+- `hardware_adapters()`, `adapters()`, and the `adapters` example.
+- Tests: all golden vectors and 10,000 random cases per op on every hardware
+  adapter; large-input tests (`--ignored`).
+- `bytelanes-wgpu` needs Rust 1.87 (wgpu 30); the other crates stay on 1.85.
+- Until a WGSL FFT exists, `WgpuBackend` does not list `Fft` in its
+  capabilities and completes it with `UnsupportedOp`; its golden-vector test
+  skips cases that use ops the backend does not list.
 
 ## 0.0.1 (unreleased)
 

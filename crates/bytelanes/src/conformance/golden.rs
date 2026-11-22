@@ -579,6 +579,27 @@ fn fft_cases(b: &mut Builder, rng: &mut SplitMix64) {
         32,
         vec![],
     );
+
+    // log2n out of range: the program fails validation, on every backend.
+    let mut params = [0; PARAMS_LEN];
+    params[0] = 17;
+    params[1] = 1;
+    let p = raw_program(&[ChannelCmd::new(
+        Op::Fft,
+        Flags::NONE,
+        Extent::host(IN, 0, 16),
+        Extent::host(OUT, 0, 16),
+        params,
+    )]);
+    b.add(
+        "invalid/fft-log2n-17",
+        "Fft log2n 17 is out of range: InvalidProgram at 0",
+        p,
+        vec![(IN, vec![1; 64]), (OUT, vec![0; 64])],
+        vec![],
+        vec![],
+        0,
+    );
 }
 
 fn program_cases(b: &mut Builder, rng: &mut SplitMix64) {

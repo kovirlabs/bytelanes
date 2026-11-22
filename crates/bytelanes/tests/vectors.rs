@@ -8,7 +8,7 @@ use bytelanes::cpu::CpuBackend;
 #[cfg_attr(miri, ignore = "reads files; covered natively")]
 fn committed_vectors_replay_on_cpu() {
     let cases = load_vectors(vectors_dir()).expect("vectors load");
-    assert!(cases.len() >= 170, "only {} cases", cases.len());
+    assert!(cases.len() >= 171, "only {} cases", cases.len());
     for case in &cases {
         let backend = CpuBackend::new();
         if let Err(m) = run_case(&backend, case) {
@@ -62,4 +62,29 @@ fn golden_set_covers_every_status_a_cpu_can_report() {
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), cases.len(), "duplicate case names");
+}
+
+#[test]
+#[cfg_attr(miri, ignore = "builds the full golden set")]
+fn cases_report_their_ops_for_capability_filtering() {
+    use bytelanes::ChannelBackend;
+    use bytelanes::abi::{Caps, ExtentKind, Features, Op};
+    let cases = golden_cases();
+    let cpu = CpuBackend::new().capabilities();
+    assert!(
+        cases.iter().all(|c| c.runs_on(&cpu)),
+        "the CPU reference runs every case"
+    );
+    let no_fft = Caps::new(
+        &[Op::Checksum, Op::Encrypt, Op::Decrypt, Op::Filter],
+        &[ExtentKind::Host, ExtentKind::Vram],
+        Features::NONE,
+        1,
+    );
+    let skipped: Vec<_> = cases.iter().filter(|c| !c.runs_on(&no_fft)).collect();
+    // The 30 fft/ cases, the decrypt-fft-checksum chain and the invalid
+    // log2n case use Fft.
+    assert_eq!(skipped.len(), 32);
+    assert!(skipped.iter().any(|c| c.name == "invalid/fft-log2n-17"));
+    assert!(skipped.iter().all(|c| c.ops().contains(&Op::Fft)));
 }

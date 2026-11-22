@@ -1,7 +1,8 @@
 # bytelanes
 
 **Status: pre-alpha.** The op format and the CPU reference exist (0.0.1).
-No GPU backend exists yet and nothing is measured.
+The wgpu GPU backend reproduces the CPU reference on the Radeon RX 7800 XT
+(Vulkan and DX12). Nothing is measured yet: there are no speed figures.
 
 Rust library of bulk data operations (checksum, filter, decrypt; later FFT and parity) that run on any GPU through wgpu. Every op has a CPU reference and a measured input size below which the CPU is used.
 
@@ -15,7 +16,7 @@ network join, appliance image), `bytelanes` (GPU data ops), `stagelanes`
 | --- | --- |
 | `bytelanes-abi` | The op format: channel programs, commands, extents, completions, status codes. `no_std` |
 | `bytelanes` | The `ChannelBackend` trait, the CPU reference backend (`bytelanes::cpu`) and the conformance harness |
-| `bytelanes-wgpu` | GPU backend through wgpu (not built yet) |
+| `bytelanes-wgpu` | GPU backend through wgpu: WGSL shaders for every op, a `BufferStrategy` seam for how bytes reach the GPU |
 | `bytelanes-bench` | GPU versus CPU benchmark (not built yet) |
 
 `vectors/` holds the golden vectors every backend must reproduce byte for byte;
@@ -39,6 +40,25 @@ let result = cpu.get_host(BufId(2)).unwrap();
 bytelanes::verify(&done, &result).unwrap();
 assert_eq!(result, 0xE306_9283u32.to_le_bytes());
 ```
+
+## GPU backend
+
+```text
+cargo run -p bytelanes-wgpu --example adapters          # GPUs found, with limits
+cargo test -p bytelanes-wgpu --release                   # golden vectors + 10,000 cases per op, every GPU
+cargo test -p bytelanes-wgpu --release --test large -- --ignored   # inputs of hundreds of MB
+WGPU_BACKEND=dx12 cargo test -p bytelanes-wgpu --release # one API only
+```
+
+Status checks run on the host in the CPU reference's order. All data work,
+including the CRC-32C of every result, runs on the GPU. Filter compares
+floats through integer keys, so NaN, signed zero and subnormals follow IEEE 754
+whatever the GPU's float hardware does, and 64-bit types work on GPUs
+without 64-bit integer or float support. On a machine with no GPU the GPU
+tests print `SKIPPED` and pass.
+
+Checked so far on one GPU: AMD Radeon RX 7800 XT, Windows, Vulkan and DX12.
+Metal (MacBook) is M4.
 
 ## Licence
 
