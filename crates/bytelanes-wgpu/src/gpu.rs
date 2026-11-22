@@ -2,7 +2,7 @@
 
 use wgpu::util::DeviceExt;
 
-use crate::strategy::BufferStrategy;
+use crate::strategy::{BufferStrategy, Readback};
 use crate::tables;
 
 /// Bytes each thread of the CRC `chunks` pass reads.
@@ -196,7 +196,7 @@ impl Gpu {
         };
         let sbox_bytes = tables::aes_sbox();
         let sbox_words: Vec<u32> = sbox_bytes.iter().map(|&b| u32::from(b)).collect();
-        let crc_table = constant("crc table", &tables::crc_table());
+        let crc_table = constant("crc tables", tables::crc_tables4().as_flattened());
         let crc_powers = constant("crc powers", &tables::crc_byte_powers());
         let te0 = constant("aes te0", &tables::aes_te0(&sbox_bytes));
         let sbox = constant("aes sbox", &sbox_words);
@@ -265,6 +265,12 @@ impl Gpu {
     ) -> Result<Vec<u8>, String> {
         self.strategy
             .download(&self.device, &self.queue, buf, offset, len)
+    }
+
+    /// Reads several ranges into host memory with one wait.
+    pub(crate) fn download_into(&self, parts: &mut [Readback<'_>]) -> Result<(), String> {
+        self.strategy
+            .download_into(&self.device, &self.queue, parts)
     }
 
     fn uniform(&self, words: &[u32]) -> wgpu::Buffer {

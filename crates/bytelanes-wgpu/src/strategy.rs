@@ -6,7 +6,17 @@
 //! hand the GPU host-visible memory instead. The ops only ever see a
 //! `wgpu::Buffer` with the input at offset 0.
 
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
+
+/// One range to read back: `dst.len()` bytes of `buffer` from `offset`.
+pub struct Readback<'a> {
+    /// The GPU buffer to read.
+    pub buffer: &'a wgpu::Buffer,
+    /// Byte offset in `buffer`; a multiple of 4.
+    pub offset: u64,
+    /// Where the bytes go; its length is the number of bytes read.
+    pub dst: &'a mut [u8],
+}
 
 /// Moves bytes between host memory and GPU buffers.
 pub trait BufferStrategy: Send + Sync {
@@ -35,12 +45,79 @@ pub trait BufferStrategy: Send + Sync {
         offset: u64,
         len: u64,
     ) -> Result<Vec<u8>, String>;
+
+    /// Reads every range in `parts` into its `dst`, after all work submitted
+    /// so far has finished. A strategy should do this with a single wait for
+    /// the GPU; the default reads the parts one at a time with `download`.
+    fn download_into(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        parts: &mut [Readback<'_>],
+    ) -> Result<(), String> {
+        for p in parts.iter_mut() {
+            let bytes = self.download(device, queue, p.buffer, p.offset, p.dst.len() as u64)?;
+            p.dst.copy_from_slice(&bytes);
+        }
+        Ok(())
+    }
 }
 
+/// Smallest readback staging buffer: small results share one size class.
+const MIN_STAGING: u64 = 64 << 10;
+/// Most staging buffers kept for reuse.
+const MAX_POOLED: usize = 4;
+
 /// Copies through `queue.write_buffer` on the way in and a mappable staging
-/// buffer on the way out.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CopyingStrategy;
+/// buffer on the way out. Staging buffers are kept and reused, so a
+/// readback does not allocate (and the OS does not zero) fresh host memory
+/// every time; several ranges come back with one wait.
+#[derive(Debug, Default)]
+pub struct CopyingStrategy {
+    staging: Mutex<Vec<wgpu::Buffer>>,
+}
+
+impl CopyingStrategy {
+    /// A strategy with an empty staging pool.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A pooled `MAP_READ` buffer of at least `size` bytes.
+    fn take(&self, device: &wgpu::Device, size: u64) -> wgpu::Buffer {
+        let mut pool = self.staging.lock().unwrap_or_else(|e| e.into_inner());
+        let best = pool
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.size() >= size)
+            .min_by_key(|(_, b)| b.size())
+            .map(|(i, _)| i);
+        match best {
+            Some(i) => pool.swap_remove(i),
+            None => device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("bytelanes readback"),
+                size: size.max(MIN_STAGING).next_power_of_two(),
+                usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+        }
+    }
+
+    /// Returns `buf` to the pool, dropping the smallest if it is full.
+    fn give(&self, buf: wgpu::Buffer) {
+        let mut pool = self.staging.lock().unwrap_or_else(|e| e.into_inner());
+        pool.push(buf);
+        if pool.len() > MAX_POOLED
+            && let Some(i) = pool
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, b)| b.size())
+                .map(|(i, _)| i)
+        {
+            pool.swap_remove(i);
+        }
+    }
+}
 
 impl BufferStrategy for CopyingStrategy {
     fn name(&self) -> &'static str {
@@ -85,23 +162,51 @@ impl BufferStrategy for CopyingStrategy {
         offset: u64,
         len: u64,
     ) -> Result<Vec<u8>, String> {
-        if len == 0 {
-            return Ok(Vec::new());
+        let mut out = vec![0u8; len as usize];
+        self.download_into(
+            device,
+            queue,
+            &mut [Readback {
+                buffer,
+                offset,
+                dst: &mut out,
+            }],
+        )?;
+        Ok(out)
+    }
+
+    fn download_into(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        parts: &mut [Readback<'_>],
+    ) -> Result<(), String> {
+        // Each part's slot in the staging buffer, rounded up to the 4-byte
+        // copy alignment.
+        let mut at = Vec::with_capacity(parts.len());
+        let mut total = 0u64;
+        for p in parts.iter() {
+            at.push(total);
+            total += (p.dst.len() as u64).next_multiple_of(4);
         }
-        let size = len.next_multiple_of(4);
-        let staging = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("bytelanes readback"),
-            size,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        if total == 0 {
+            return Ok(());
+        }
+        let staging = self.take(device, total);
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("bytelanes readback"),
         });
-        enc.copy_buffer_to_buffer(buffer, offset, &staging, 0, size);
+        for (p, &slot) in parts.iter().zip(&at) {
+            let size = (p.dst.len() as u64).next_multiple_of(4);
+            if size > 0 {
+                enc.copy_buffer_to_buffer(p.buffer, p.offset, &staging, slot, size);
+            }
+        }
         let index = queue.submit([enc.finish()]);
+        // Mapped ranges are 8-byte aligned; the pooled buffer is larger.
+        let mapped = total.next_multiple_of(wgpu::MAP_ALIGNMENT);
         let (tx, rx) = mpsc::channel();
-        staging.map_async(wgpu::MapMode::Read, .., move |r| {
+        staging.map_async(wgpu::MapMode::Read, ..mapped, move |r| {
             let _ = tx.send(r);
         });
         device
@@ -113,13 +218,18 @@ impl BufferStrategy for CopyingStrategy {
         rx.recv()
             .map_err(|_| "map callback never ran".to_owned())?
             .map_err(|e| format!("buffer map failed: {e}"))?;
-        let bytes = {
+        {
             let view = staging
-                .get_mapped_range(..)
+                .get_mapped_range(..mapped)
                 .map_err(|e| format!("mapped range: {e:?}"))?;
-            view[..len as usize].to_vec()
-        };
+            for (p, &slot) in parts.iter_mut().zip(&at) {
+                let n = p.dst.len();
+                p.dst
+                    .copy_from_slice(&view[slot as usize..slot as usize + n]);
+            }
+        }
         staging.unmap();
-        Ok(bytes)
+        self.give(staging);
+        Ok(())
     }
 }

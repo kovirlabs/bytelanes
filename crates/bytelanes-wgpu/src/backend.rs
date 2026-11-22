@@ -19,7 +19,7 @@ use bytelanes::abi::{
 use bytelanes::{Buffers, Busy, ChannelBackend};
 
 use crate::gpu::{Data, FilterArgs, Gpu};
-use crate::strategy::{BufferStrategy, CopyingStrategy};
+use crate::strategy::{BufferStrategy, CopyingStrategy, Readback};
 
 /// Default number of programs queued or finished-but-unpolled before
 /// `submit` reports [`Busy`].
@@ -92,7 +92,11 @@ impl WgpuBackend {
     /// Opens `adapter` with the [`CopyingStrategy`] and the default queue
     /// depth.
     pub fn new(adapter: &wgpu::Adapter) -> Result<Self, Error> {
-        Self::with_strategy(adapter, Box::new(CopyingStrategy), DEFAULT_QUEUE_DEPTH)
+        Self::with_strategy(
+            adapter,
+            Box::new(CopyingStrategy::new()),
+            DEFAULT_QUEUE_DEPTH,
+        )
     }
 
     /// Opens `adapter` with a buffer strategy and queue depth.
@@ -275,15 +279,39 @@ fn execute(gpu: &Gpu, st: &mut State, prog: &ChannelProgram, tag: Tag) -> Comple
     let Some(result) = prev else {
         return Completion::error(tag, NO_INDEX, Status::DeviceError, 0);
     };
-    // The result's CRC is computed on the GPU.
+    // The result's CRC is computed on the GPU. A host destination (only the
+    // last command can have one) is read back together with the CRC, with
+    // one wait, straight into the host buffer.
     let crc = gpu.crc(&result);
-    match gpu.download(&crc, 0, 4) {
-        Ok(b) => Completion::ok(
-            tag,
-            last,
-            result.len as u32,
-            u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-        ),
+    let mut crc_bytes = [0u8; 4];
+    let read = match cmds[cmds.len() - 1].check() {
+        Ok((_, _, ExtentRef::Host(r))) => match st.host.get_mut(&r.buf) {
+            Some(host) => {
+                let start = r.offset as usize;
+                let dst = &mut host[start..start + result.len as usize];
+                gpu.download_into(&mut [
+                    Readback {
+                        buffer: &result.buf,
+                        offset: result.off,
+                        dst,
+                    },
+                    Readback {
+                        buffer: &crc,
+                        offset: 0,
+                        dst: &mut crc_bytes,
+                    },
+                ])
+            }
+            None => return Completion::error(tag, last, Status::UnknownBuffer, 0),
+        },
+        _ => gpu.download_into(&mut [Readback {
+            buffer: &crc,
+            offset: 0,
+            dst: &mut crc_bytes,
+        }]),
+    };
+    match read {
+        Ok(()) => Completion::ok(tag, last, result.len as u32, u32::from_le_bytes(crc_bytes)),
         Err(_) => Completion::error(tag, last, Status::DeviceError, 0),
     }
 }
@@ -454,14 +482,9 @@ fn run_cmd(gpu: &Gpu, st: &mut State, cmd: &ChannelCmd, fed: Option<Data>) -> Re
         return Err(Fail(Status::DstTooSmall, out_len));
     }
     match dst {
-        ExtentRef::Host(r) => {
-            let bytes = gpu
-                .download(&out.buf, out.off, out.len)
-                .map_err(device_error)?;
-            let host = st.host.get_mut(&r.buf).ok_or(Status::UnknownBuffer)?;
-            let start = r.offset as usize;
-            host[start..start + bytes.len()].copy_from_slice(&bytes);
-        }
+        // Validation puts a host destination only on the last command;
+        // `execute` reads it back together with the result's CRC.
+        ExtentRef::Host(_) => {}
         _ => {
             let v = st.vram.get(&dst_range.buf).ok_or(Status::UnknownBuffer)?;
             gpu.place(&out, &v.buf, dst_range.offset);
