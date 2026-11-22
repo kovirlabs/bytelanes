@@ -5,22 +5,28 @@
 //! bytelanes-bench adapters
 //! bytelanes-bench ops       --machine ryzen --host-link "PCIe 3.0 x16" [options]
 //! bytelanes-bench commitlog --machine ryzen --host-link "PCIe 3.0 x16" [options]
+//! bytelanes-bench stream    --machine ryzen --host-link "PCIe 3.0 x16" [options]
 //! ```
 //!
 //! `ops` writes one run file per op (`<date>-<op>.json`); `commitlog` writes
-//! `<date>-commitlog.json`. Both go to `--out`, by default
+//! `<date>-commitlog.json`; `stream` (throughput: many commit-log batches in
+//! flight, GPU with overlap off and on, CPU on 1..N threads) writes
+//! `<date>-stream.json`. All go to `--out`, by default
 //! `../paralanes/atlas/runs/<machine>/`. An existing file is never
 //! overwritten: the new run gets a `-2`, `-3`, ... suffix.
 //!
 //! Options: `--machine-desc <text>`, `--note <text>`, `--min-time <s>`
 //! (default 1), `--max-size <bytes>` (ops, default 256 MiB), `--max-txns
-//! <n>` (commitlog, default 1048576), `--ops a,b`, `--out <dir>`. Set
+//! <n>` (commitlog, default 1048576), `--ops a,b`, `--out <dir>`; for
+//! `stream`: `--txns 4096,16384,...` (per batch), `--batches <k>` (default
+//! 16), `--cpu-threads 1,8,16` (default 1, half and all logical CPUs). Set
 //! `WGPU_BACKEND=vulkan` or `=dx12` to measure one API only.
 
 #![forbid(unsafe_code)]
 
 mod measure;
 mod meta;
+mod stream;
 mod workloads;
 
 use std::path::PathBuf;
@@ -48,13 +54,17 @@ struct Args {
     ops: Vec<String>,
     /// Explicit sizes in bytes (ops); replaces the 64 B x 4^n series.
     sizes: Option<Vec<u64>>,
+    /// Stream: transactions per batch, batches in flight, CPU thread counts.
+    stream_txns: Vec<u64>,
+    batches: u64,
+    cpu_threads: Vec<usize>,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: bytelanes-bench <adapters|ops|commitlog> --machine <name> --host-link <text> \
+        "usage: bytelanes-bench <adapters|ops|commitlog|stream> --machine <name> --host-link <text> \
          [--machine-desc <text>] [--note <text>] [--out <dir>] [--min-time <s>] \
-         [--max-size <bytes>] [--sizes 16M,24M,...] [--max-txns <n>] [--ops checksum,encrypt,decrypt,filter]"
+         [--max-size <bytes>] [--sizes 16M,24M,...] [--max-txns <n>] [--ops checksum,encrypt,decrypt,filter] [--txns 4096,...] [--batches <k>] [--cpu-threads 1,8,16]"
     );
     std::process::exit(2)
 }
@@ -74,6 +84,14 @@ fn parse() -> Args {
         max_txns: 1 << 20,
         ops: workloads::OPS.iter().map(|s| (*s).to_owned()).collect(),
         sizes: None,
+        stream_txns: vec![4096, 16384, 65536, 262_144],
+        batches: 16,
+        cpu_threads: {
+            let all = std::thread::available_parallelism().map_or(1, usize::from);
+            let mut v = vec![1, (all / 2).max(1), all];
+            v.dedup();
+            v
+        },
     };
     while let Some(flag) = it.next() {
         let mut val = || it.next().unwrap_or_else(|| usage());
@@ -94,6 +112,19 @@ fn parse() -> Args {
                         .map(|s| parse_size(s).unwrap_or_else(|| usage()))
                         .collect(),
                 )
+            }
+            "--txns" => {
+                a.stream_txns = val()
+                    .split(',')
+                    .map(|s| s.parse().unwrap_or_else(|_| usage()))
+                    .collect()
+            }
+            "--batches" => a.batches = val().parse().unwrap_or_else(|_| usage()),
+            "--cpu-threads" => {
+                a.cpu_threads = val()
+                    .split(',')
+                    .map(|s| s.parse().unwrap_or_else(|_| usage()))
+                    .collect()
             }
             _ => usage(),
         }
@@ -429,6 +460,72 @@ fn main() {
                 });
             }
             write(&dir, "commitlog", &file);
+        }
+        "stream" => {
+            let mut file = run_file(&a, "bytelanes-stream", &engines, budget);
+            file["purpose"] = json!(
+                "M5: throughput with many commit-log batches in flight. GPU with program overlap off (serial) and on; CPU reference on 1, half and all logical CPUs (one CpuBackend per thread, batches spread round-robin)"
+            );
+            file["workload"] = json!({
+                "batches_in_flight": a.batches,
+                "commit": "per batch: [Filter i64 Gt on the amount column] and [Encrypt AES-256-CTR of the records], both host to host; every batch reads the same generated records with its own IV",
+                "audit": "per batch: [Decrypt the encrypted amount column into device memory, chained into Filter i64 Gt, indices to host]",
+                "cpu_threads": a.cpu_threads,
+                "units": "transactions",
+            });
+            file["method_stream"] = json!(
+                "one repetition = all batches submitted (GPU) or run across the threads (CPU), then every completion collected and checked against the CPU reference; transactions_per_s uses the median repetition; cpu_work_ns_per_transaction = process CPU time (all threads) minus the caller's polling, over the series"
+            );
+            let mut list: Vec<stream::StreamEngine<'_>> = a
+                .cpu_threads
+                .iter()
+                .map(|&n| stream::StreamEngine::Cpu(n))
+                .collect();
+            for e in &engines {
+                if let Engine::Gpu(label, b) = e {
+                    for overlap in [false, true] {
+                        list.push(stream::StreamEngine::Gpu {
+                            label: label.clone(),
+                            backend: b,
+                            overlap,
+                        });
+                    }
+                }
+            }
+            for (name, make) in [
+                (
+                    "commit",
+                    stream::Stream::commit as fn(u64, u64) -> stream::Stream,
+                ),
+                ("audit", stream::Stream::audit),
+            ] {
+                eprintln!("== {name}");
+                let mut points = Vec::new();
+                for &t in &a.stream_txns {
+                    let s = make(t, a.batches);
+                    let mut results = serde_json::Map::new();
+                    let mut line = format!("{t:>8} txn x {}", a.batches);
+                    for e in &list {
+                        let label = e.label();
+                        let j = stream::measure(e, &s, budget)
+                            .unwrap_or_else(|err| panic!("{name} {t} on {label}: {err}"));
+                        line += &format!(
+                            " | {label} {:.2} M txn/s, {:.0} ns cpu/txn",
+                            j["transactions_per_s_at_p50"].as_f64().unwrap_or(0.0) / 1e6,
+                            j["cpu_work_ns_per_transaction"].as_f64().unwrap_or(0.0)
+                        );
+                        results.insert(label, j);
+                    }
+                    eprintln!("{line}");
+                    points.push(json!({
+                        "transactions_per_batch": t,
+                        "batches": a.batches,
+                        "engines": results,
+                    }));
+                }
+                file[name] = Value::Array(points);
+            }
+            write(&dir, "stream", &file);
         }
         _ => usage(),
     }
