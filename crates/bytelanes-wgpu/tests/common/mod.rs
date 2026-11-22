@@ -35,7 +35,7 @@ pub fn adapters() -> Vec<wgpu::Adapter> {
 /// Every buffer strategy that applies to `adapter`: always copying, plus
 /// unified memory where the adapter allows it.
 pub fn strategies(adapter: &wgpu::Adapter) -> Vec<Box<dyn BufferStrategy>> {
-    let mut out: Vec<Box<dyn BufferStrategy>> = vec![Box::new(CopyingStrategy)];
+    let mut out: Vec<Box<dyn BufferStrategy>> = vec![Box::new(CopyingStrategy::new())];
     if let Ok(s) = UnifiedMemoryStrategy::for_adapter(adapter) {
         out.push(Box::new(s));
     }

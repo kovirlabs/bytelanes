@@ -46,8 +46,16 @@ Crates live in `crates/<name>/`. The workspace pulls in every crate under
 `crates/*`, so a new directory there becomes a member automatically. Version,
 edition (2024), MSRV (1.89, set by `aes` 0.9; CI's `msrv` job checks it), licence and
 `publish = false` are set once in `[workspace.package]` in the root
-`Cargo.toml`, so a version bump is one edit there. `bytelanes-bench` is still
-a stub (exits with code 2).
+`Cargo.toml`, so a version bump is one edit there.
+
+`bytelanes-bench` layout:
+- `workloads.rs`: generated data and the programs for each point.
+- `measure.rs`: timing through submit and poll. Every completion is checked
+  against the CPU reference.
+- `meta.rs`: the fields every run file records.
+- `build.rs`: records the rustc and locked wgpu versions.
+
+It refuses to run as a debug build.
 
 `bytelanes-wgpu` layout: `src/shaders/*.wgsl` (each kernel shader gets
 `bytes.wgsl` appended for byte loads and 2D dispatch indexing), `gpu.rs`
@@ -162,8 +170,11 @@ on Ubuntu, Windows and macOS, plus miri on Ubuntu. The workspace sets
 `missing_docs = "warn"`, and clippy runs with `-D warnings`, so any public item
 without a doc comment fails clippy.
 
-Benchmark output goes to `../paralanes/atlas/runs/<machine>/<YYYY-MM-DD>-<op>.json`;
-do not edit run files after they are committed.
+Benchmark output goes to `../paralanes/atlas/runs/<machine>/<YYYY-MM-DD>-<op>.json`
+(and `-commitlog.json`); do not edit run files after they are committed. On
+the Ryzen, stop the self-hosted CI runner before measuring (README, "GPU
+CI"), and record in `--note` that it was stopped. Commit the code first, so
+the run file's commit hash is clean (`uncommitted_changes: false`).
 
 ## Release rule
 

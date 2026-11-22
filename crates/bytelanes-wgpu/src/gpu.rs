@@ -2,7 +2,10 @@
 
 use wgpu::util::DeviceExt;
 
-use crate::strategy::BufferStrategy;
+use std::sync::Mutex;
+
+use crate::pool::DevicePool;
+use crate::strategy::{BufferStrategy, PendingDownload, ReadRange};
 use crate::tables;
 
 /// Bytes each thread of the CRC `chunks` pass reads.
@@ -59,6 +62,19 @@ pub(crate) struct Gpu {
     sbox: wgpu::Buffer,
     pub(crate) sbox_bytes: [u8; 256],
     dummy: wgpu::Buffer,
+    /// Reused scratch buffers for op outputs and intermediates.
+    scratch: DevicePool,
+    /// Buffers taken since the last `recycle`: returned to their pool once
+    /// the program that uses them has submitted all its work.
+    leases: Mutex<Vec<Lease>>,
+    /// Reused scratch buffers to zero at the next `submit`.
+    clears: Mutex<Vec<(wgpu::Buffer, u64)>>,
+}
+
+/// A pooled buffer in use, and which pool it goes back to.
+enum Lease {
+    Scratch(wgpu::Buffer),
+    Input(wgpu::Buffer),
 }
 
 fn words_to_bytes(words: &[u32]) -> Vec<u8> {
@@ -196,7 +212,7 @@ impl Gpu {
         };
         let sbox_bytes = tables::aes_sbox();
         let sbox_words: Vec<u32> = sbox_bytes.iter().map(|&b| u32::from(b)).collect();
-        let crc_table = constant("crc table", &tables::crc_table());
+        let crc_table = constant("crc tables", tables::crc_tables4().as_flattened());
         let crc_powers = constant("crc powers", &tables::crc_byte_powers());
         let te0 = constant("aes te0", &tables::aes_te0(&sbox_bytes));
         let sbox = constant("aes sbox", &sbox_words);
@@ -218,15 +234,62 @@ impl Gpu {
             sbox,
             sbox_bytes,
             dummy,
+            scratch: DevicePool::default(),
+            leases: Mutex::new(Vec::new()),
+            clears: Mutex::new(Vec::new()),
         })
+    }
+
+    fn lease(&self, l: Lease) {
+        self.leases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(l);
+    }
+
+    /// Returns every buffer taken since the last call to its pool. Call it
+    /// once the current program has submitted all its GPU work: queue order
+    /// then makes reuse by a later program safe.
+    pub(crate) fn recycle(&self) {
+        let leases = std::mem::take(&mut *self.leases.lock().unwrap_or_else(|e| e.into_inner()));
+        for l in leases {
+            match l {
+                Lease::Scratch(b) => self.scratch.give(b),
+                Lease::Input(b) => self.strategy.recycle(b),
+            }
+        }
     }
 
     pub(crate) fn strategy_name(&self) -> &'static str {
         self.strategy.name()
     }
 
-    /// A zero-filled buffer for `len` logical bytes.
+    /// A zero-filled scratch buffer for `len` logical bytes, from the pool.
+    /// New buffers come from the strategy's `alloc` (so a unified-memory
+    /// strategy can make results the CPU reads in place); a reused buffer is
+    /// cleared first, so it reads exactly like a new one. It goes back to the
+    /// pool at the next `recycle`.
     pub(crate) fn zeroed(&self, label: &str, len: u64) -> wgpu::Buffer {
+        let size = padded(len);
+        let (buf, reused) = self.scratch.take(&self.device, size, |alloc_size| {
+            self.strategy.alloc(&self.device, label, alloc_size)
+        });
+        if reused {
+            // Cleared at the start of the next `submit`, before any kernel
+            // that could use it.
+            self.clears
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push((buf.clone(), size));
+        }
+        self.lease(Lease::Scratch(buf.clone()));
+        buf
+    }
+
+    /// A new zero-filled buffer for `len` logical bytes, owned by the
+    /// caller (device buffers named by programs), from the strategy's
+    /// `alloc`. Not pooled.
+    pub(crate) fn fresh_zeroed(&self, label: &str, len: u64) -> wgpu::Buffer {
         self.strategy.alloc(&self.device, label, padded(len))
     }
 
@@ -242,6 +305,7 @@ impl Gpu {
         let buf = self
             .strategy
             .upload(&self.device, &self.queue, data, padded(data.len() as u64));
+        self.lease(Lease::Input(buf.clone()));
         Data {
             buf,
             off: 0,
@@ -257,6 +321,25 @@ impl Gpu {
     ) -> Result<Vec<u8>, String> {
         self.strategy
             .download(&self.device, &self.queue, buf, offset, len)
+    }
+
+    /// Submits the copies for a readback without waiting.
+    pub(crate) fn begin_download(
+        &self,
+        parts: &[ReadRange<'_>],
+    ) -> Result<PendingDownload, String> {
+        self.strategy
+            .begin_download(&self.device, &self.queue, parts)
+    }
+
+    /// Waits for a readback from `begin_download` and fills `dsts`.
+    pub(crate) fn finish_download(
+        &self,
+        pending: PendingDownload,
+        dsts: &mut [&mut [u8]],
+    ) -> Result<(), String> {
+        self.strategy
+            .finish_download(&self.device, &self.queue, pending, dsts)
     }
 
     fn uniform(&self, words: &[u32]) -> wgpu::Buffer {
@@ -309,6 +392,21 @@ impl Gpu {
     fn encoder(&self) -> wgpu::CommandEncoder {
         self.device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None })
+    }
+
+    /// Submits `enc`, preceded in the same submission by the clears of any
+    /// reused scratch buffers taken since the last submit.
+    fn submit(&self, enc: wgpu::CommandEncoder) {
+        let clears = std::mem::take(&mut *self.clears.lock().unwrap_or_else(|e| e.into_inner()));
+        if clears.is_empty() {
+            self.queue.submit([enc.finish()]);
+            return;
+        }
+        let mut pre = self.encoder();
+        for (buf, size) in &clears {
+            pre.clear_buffer(buf, 0, Some(*size));
+        }
+        self.queue.submit([pre.finish(), enc.finish()]);
     }
 
     /// CRC-32C of `input`, as a buffer whose first word is the CRC.
@@ -374,7 +472,7 @@ impl Gpu {
             ],
         );
         self.dispatch(&mut enc, &self.crc.pipelines[2], &g, 1);
-        self.queue.submit([enc.finish()]);
+        self.submit(enc);
         out
     }
 
@@ -406,7 +504,7 @@ impl Gpu {
             );
             let mut enc = self.encoder();
             self.dispatch(&mut enc, &self.aes.pipelines[0], &g, blocks.div_ceil(64));
-            self.queue.submit([enc.finish()]);
+            self.submit(enc);
         }
         Data {
             buf: out,
@@ -440,7 +538,7 @@ impl Gpu {
         self.dispatch(&mut enc, &self.filter.pipelines[0], &g, tiles);
         self.dispatch(&mut enc, &self.filter.pipelines[1], &g, 1);
         self.dispatch(&mut enc, &self.filter.pipelines[2], &g, tiles);
-        self.queue.submit([enc.finish()]);
+        self.submit(enc);
         let total = self.download(&counts, u64::from(tiles) * 4, 4)?;
         let total = u32::from_le_bytes([total[0], total[1], total[2], total[3]]);
         Ok(Data {
@@ -463,7 +561,7 @@ impl Gpu {
         let g = self.bind(&self.place, &[&src.buf, dst, &params]);
         let mut enc = self.encoder();
         self.dispatch(&mut enc, &self.place.pipelines[0], &g, words.div_ceil(64));
-        self.queue.submit([enc.finish()]);
+        self.submit(enc);
     }
 
     /// Round keys for `key`, in a GPU buffer.

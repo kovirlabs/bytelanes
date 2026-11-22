@@ -24,6 +24,22 @@ pub(crate) fn crc_table() -> [u32; 256] {
     t
 }
 
+/// Slicing-by-4 tables for the reflected CRC-32C: `t[0]` is the byte
+/// table and `t[k][i]` is `t[k-1][i]` advanced by one zero byte. A word `w`
+/// (little-endian) is absorbed as `r ^= w; r = t[3][r & 0xFF] ^
+/// t[2][(r >> 8) & 0xFF] ^ t[1][(r >> 16) & 0xFF] ^ t[0][r >> 24]`.
+pub(crate) fn crc_tables4() -> [[u32; 256]; 4] {
+    let mut t = [[0u32; 256]; 4];
+    t[0] = crc_table();
+    for k in 1..4 {
+        for i in 0..256 {
+            let prev = t[k - 1][i];
+            t[k][i] = (prev >> 8) ^ t[0][(prev & 0xFF) as usize];
+        }
+    }
+    t
+}
+
 /// `a(x) * b(x) mod P(x)` with bit 31 as x^0 (zlib's `multmodp`).
 pub(crate) fn multmodp(a: u32, mut b: u32) -> u32 {
     if a == 0 {
@@ -172,6 +188,29 @@ mod tests {
         let mut rng = SplitMix64::new(7);
         let data = rng.bytes(1000);
         assert_eq!(crc(&data), ops::checksum(&data));
+    }
+
+    /// Slicing-by-4 (words, then a byte tail) gives the byte-at-a-time CRC.
+    #[test]
+    fn slicing_by_4_matches_reference() {
+        let t = crc_tables4();
+        let mut rng = SplitMix64::new(3);
+        for len in [0usize, 1, 3, 4, 5, 255, 256, 1001] {
+            let data = rng.bytes(len);
+            let mut r = !0u32;
+            let (words, tail) = data.as_chunks::<4>();
+            for &w in words {
+                r ^= u32::from_le_bytes(w);
+                r = t[3][(r & 0xFF) as usize]
+                    ^ t[2][((r >> 8) & 0xFF) as usize]
+                    ^ t[1][((r >> 16) & 0xFF) as usize]
+                    ^ t[0][(r >> 24) as usize];
+            }
+            for &b in tail {
+                r = t[0][((r ^ u32::from(b)) & 0xFF) as usize] ^ (r >> 8);
+            }
+            assert_eq!(!r, ops::checksum(&data), "len {len}");
+        }
     }
 
     /// Runs the shader's algorithm on the host: raw (init 0) CRC per chunk,

@@ -60,7 +60,7 @@ const KEY: u32 = 1;
 
 fn strategy(name: &str, adapter: &wgpu::Adapter) -> Option<Box<dyn BufferStrategy>> {
     match name {
-        "copying" => Some(Box::new(CopyingStrategy)),
+        "copying" => Some(Box::new(CopyingStrategy::new())),
         "unified" => UnifiedMemoryStrategy::for_adapter(adapter)
             .ok()
             .map(|s| Box::new(s) as Box<dyn BufferStrategy>),

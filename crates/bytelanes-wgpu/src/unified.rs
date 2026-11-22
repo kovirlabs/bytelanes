@@ -140,7 +140,7 @@ impl BufferStrategy for UnifiedMemoryStrategy {
             return Ok(Vec::new());
         }
         if !buffer.usage().contains(wgpu::BufferUsages::MAP_READ) {
-            return CopyingStrategy.download(device, queue, buffer, offset, len);
+            return CopyingStrategy::new().download(device, queue, buffer, offset, len);
         }
         // A mapping starts at a multiple of 8 and ends at a multiple of 4.
         let start = offset - offset % wgpu::MAP_ALIGNMENT;

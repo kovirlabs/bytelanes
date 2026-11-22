@@ -28,12 +28,13 @@
 
 mod backend;
 mod gpu;
+mod pool;
 mod strategy;
 mod tables;
 mod unified;
 
 pub use backend::{DEFAULT_QUEUE_DEPTH, Error, WgpuBackend};
-pub use strategy::{BufferStrategy, CopyingStrategy};
+pub use strategy::{BufferStrategy, CopyingStrategy, PendingDownload, ReadRange, Readback};
 pub use unified::UnifiedMemoryStrategy;
 pub use wgpu;
 

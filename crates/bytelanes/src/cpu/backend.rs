@@ -147,32 +147,53 @@ fn execute(st: &mut State, prog: &ChannelProgram, tag: Tag) -> Completion {
     }
     let cmds = prog.commands();
     let mut prev: Option<Vec<u8>> = None;
-    let mut result_crc = 0;
-    let mut result_len = 0;
+    let mut result = Done {
+        len: 0,
+        crc: 0,
+        next: None,
+    };
     for (i, cmd) in cmds.iter().enumerate() {
         let idx = i as u16;
         let fed = i > 0 && cmds[i - 1].flags().contains(Flags::CHAIN);
         let input = if fed { prev.take() } else { None };
-        match run_cmd(st, cmd, input) {
-            Ok(out) => {
-                result_len = out.len() as u32;
-                result_crc = ops::checksum(&out);
-                prev = Some(out);
+        match run_cmd(st, cmd, input, i + 1 == cmds.len()) {
+            Ok(done) => {
+                prev = done.next.clone();
+                result = done;
             }
             Err(Fail(status, bytes)) => return Completion::error(tag, idx, status, bytes),
         }
     }
     let last = u16::try_from(cmds.len() - 1).unwrap_or(NO_INDEX);
-    Completion::ok(tag, last, result_len, result_crc)
+    Completion::ok(tag, last, result.len, result.crc)
 }
 
-/// Run one command; returns its result bytes. `fed` is the previous
-/// command's result when a chain feeds this command.
+/// What one command produced.
+struct Done {
+    /// Result length in bytes.
+    len: u32,
+    /// CRC-32C of the result; computed only for the program's last command,
+    /// the only one a completion reports.
+    crc: u32,
+    /// The result bytes, kept only when a chain feeds them to the next
+    /// command.
+    next: Option<Vec<u8>>,
+}
+
+/// Run one command, writing its result into `dst`. `fed` is the previous
+/// command's result when a chain feeds this command; `last` says whether
+/// this is the program's last command.
+///
+/// Sources are read in place and Encrypt and Decrypt write straight into
+/// the destination, so a command allocates nothing beyond small results
+/// (indices, a CRC, FFT bins) and chained intermediates. The status checks
+/// run in the order the op format defines.
 fn run_cmd(
     st: &mut State,
     cmd: &crate::abi::ChannelCmd,
     fed: Option<Vec<u8>>,
-) -> Result<Vec<u8>, Fail> {
+    last: bool,
+) -> Result<Done, Fail> {
     // Validation already passed, so check() cannot fail here.
     let (op, src, dst) = cmd.check().map_err(|_| Status::InvalidProgram)?;
 
@@ -187,32 +208,70 @@ fn run_cmd(
         }
     }
     // 3. Buffers and bounds: src (unless fed), then dst.
-    let input = match fed {
-        Some(v) => v,
-        None => read(st, src)?,
-    };
+    let src_range = range_of(src);
+    if fed.is_none() {
+        check_range(region(st, src)?, &src_range)?;
+    }
     let dst_range = range_of(dst);
     check_range(region(st, dst)?, &dst_range)?;
+    let chains = cmd.flags().contains(Flags::CHAIN);
 
-    // 4-5. Key and length, inside the op.
-    let out = match op {
-        Op::Checksum => ops::checksum(&input).to_le_bytes().to_vec(),
+    // 4-5. Key and length, then the op.
+    let out: Vec<u8> = match op {
         Op::Encrypt | Op::Decrypt => {
             let p = cmd.crypt_params();
-            let key = st.keys.get(&p.key_slot()).ok_or(Status::UnknownKey)?;
-            let mut out = vec![0; input.len()];
-            ops::aes256_ctr(key, &p.iv, &input, &mut out);
-            out
+            let key = *st.keys.get(&p.key_slot()).ok_or(Status::UnknownKey)?;
+            let n = match &fed {
+                Some(v) => v.len(),
+                None => src_range.len as usize,
+            };
+            let Ok(out_len) = u32::try_from(n) else {
+                return Err(Status::InvalidLength.into());
+            };
+            // 6. Destination size (known before running: output = input).
+            if n as u64 > dst_range.len {
+                return Err(Fail(Status::DstTooSmall, out_len));
+            }
+            let start = dst_range.offset as usize;
+            match fed {
+                Some(mut v) => {
+                    ops::aes256_ctr_in_place(&key, &p.iv, &mut v);
+                    region(st, dst)?[start..start + n].copy_from_slice(&v);
+                    return Ok(done(&v, last, chains.then_some(v.clone())));
+                }
+                None => {
+                    with_src_dst(st, src, dst, |s, d| {
+                        ops::aes256_ctr(&key, &p.iv, s, &mut d[..n]);
+                    })?;
+                    let written = &region(st, dst)?[start..start + n];
+                    let next = chains.then(|| written.to_vec());
+                    return Ok(done(written, last, next));
+                }
+            }
+        }
+        Op::Checksum => {
+            let crc = match &fed {
+                Some(v) => ops::checksum(v),
+                None => ops::checksum(slice(st, src)?),
+            };
+            crc.to_le_bytes().to_vec()
         }
         Op::Filter => {
             let spec = cmd.filter_spec().map_err(|_| Status::InvalidProgram)?;
             let mut idx = Vec::new();
-            ops::filter(&spec, &input, &mut idx)?;
+            match &fed {
+                Some(v) => ops::filter(&spec, v, &mut idx)?,
+                None => ops::filter(&spec, slice(st, src)?, &mut idx)?,
+            }
             ops::indices_to_bytes(&idx)
         }
         Op::Fft => {
             let mut out = Vec::new();
-            super::fft::fft(cmd.fft_params().log2n(), &input, &mut out)?;
+            let log2n = cmd.fft_params().log2n();
+            match &fed {
+                Some(v) => super::fft::fft(log2n, v, &mut out)?,
+                None => super::fft::fft(log2n, slice(st, src)?, &mut out)?,
+            }
             out
         }
         Op::Read | Op::Write | Op::Decompress | Op::Compress | Op::Score => {
@@ -230,7 +289,66 @@ fn run_cmd(
     let buf = region(st, dst)?;
     let start = dst_range.offset as usize;
     buf[start..start + out.len()].copy_from_slice(&out);
-    Ok(out)
+    let d = done(&out, last, None);
+    Ok(Done {
+        next: chains.then_some(out),
+        ..d
+    })
+}
+
+/// A command's `Done`: length, the CRC when it is the last command, and the
+/// bytes to feed onward.
+fn done(result: &[u8], last: bool, next: Option<Vec<u8>>) -> Done {
+    Done {
+        len: result.len() as u32,
+        crc: if last { ops::checksum(result) } else { 0 },
+        next,
+    }
+}
+
+/// The bytes an extent names (bounds already checked).
+fn slice(st: &mut State, e: ExtentRef) -> Result<&[u8], Status> {
+    let r = range_of(e);
+    let buf = region(st, e)?;
+    Ok(&buf[r.offset as usize..(r.offset + r.len) as usize])
+}
+
+/// Calls `f` with the source bytes and the destination range at the same
+/// time (bounds already checked). Validation guarantees the two do not
+/// overlap, even within one buffer.
+fn with_src_dst(
+    st: &mut State,
+    src: ExtentRef,
+    dst: ExtentRef,
+    f: impl FnOnce(&[u8], &mut [u8]),
+) -> Result<(), Status> {
+    let (s, d) = (range_of(src), range_of(dst));
+    let same_buf = s.buf == d.buf
+        && matches!(
+            (src, dst),
+            (ExtentRef::Host(_), ExtentRef::Host(_)) | (ExtentRef::Vram(_), ExtentRef::Vram(_))
+        );
+    let (s0, s1) = (s.offset as usize, (s.offset + s.len) as usize);
+    let (d0, d1) = (d.offset as usize, (d.offset + d.len) as usize);
+    if same_buf {
+        let buf = region(st, dst)?;
+        if d1 <= s0 {
+            // Destination before the source.
+            let (head, rest) = buf.split_at_mut(s0);
+            f(&rest[..s1 - s0], &mut head[d0..d1]);
+        } else {
+            // Destination after the source (validation rules out overlap).
+            let (head, rest) = buf.split_at_mut(d0);
+            f(&head[s0..s1], &mut rest[..d1 - d0]);
+        }
+        return Ok(());
+    }
+    // Different buffers: move the destination out of its map (no copy),
+    // borrow the source, then put the destination back.
+    let mut out = std::mem::take(region(st, dst)?);
+    let r = slice(st, src).map(|s| f(s, &mut out[d0..d1]));
+    *region(st, dst)? = out;
+    r
 }
 
 fn range_of(e: ExtentRef) -> BufRange {
@@ -252,11 +370,4 @@ fn check_range(buf: &[u8], r: &BufRange) -> Result<(), Status> {
         Some(end) if end <= buf.len() as u64 => Ok(()),
         _ => Err(Status::OutOfBounds),
     }
-}
-
-fn read(st: &mut State, e: ExtentRef) -> Result<Vec<u8>, Status> {
-    let r = range_of(e);
-    let buf = region(st, e)?;
-    check_range(buf, &r)?;
-    Ok(buf[r.offset as usize..(r.offset + r.len) as usize].to_vec())
 }

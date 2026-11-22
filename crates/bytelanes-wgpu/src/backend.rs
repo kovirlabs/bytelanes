@@ -7,8 +7,8 @@
 //! result into device memory, and the CRC-32C of the final result.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, SyncSender};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 
@@ -19,7 +19,7 @@ use bytelanes::abi::{
 use bytelanes::{Buffers, Busy, ChannelBackend};
 
 use crate::gpu::{Data, FilterArgs, Gpu};
-use crate::strategy::{BufferStrategy, CopyingStrategy};
+use crate::strategy::{BufferStrategy, CopyingStrategy, PendingDownload, ReadRange};
 
 /// Default number of programs queued or finished-but-unpolled before
 /// `submit` reports [`Busy`].
@@ -64,6 +64,68 @@ struct Shared {
     /// Programs accepted and not yet polled (queued, running or done).
     in_flight: AtomicUsize,
     health: AtomicU8,
+    /// See [`WgpuBackend::set_overlap`].
+    overlap: AtomicBool,
+}
+
+/// A queued program and its tag.
+type Job = (Box<ChannelProgram>, Tag);
+
+/// Runs `f`, turning a panic into a device error and a degraded path.
+fn guarded<T>(s: &Shared, tag: Tag, f: impl FnOnce() -> T, err: impl FnOnce(Completion) -> T) -> T {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        s.health.store(DEGRADED, Ordering::Relaxed);
+        err(Completion::error(tag, NO_INDEX, Status::DeviceError, 0))
+    })
+}
+
+/// The worker: runs programs in order. With overlap on it keeps one
+/// program "issued" (GPU work submitted, readback started) while it issues
+/// the next, and finishes them in order.
+fn work(s: &Shared, rx: &Receiver<Job>) {
+    let mut issued: Option<(Tag, InFlight)> = None;
+    loop {
+        // Block for work only when nothing is waiting to be finished.
+        let next = match &issued {
+            None => match rx.recv() {
+                Ok(job) => Some(job),
+                Err(_) => break,
+            },
+            // Empty or disconnected: finish what is in flight first.
+            Some(_) => rx.try_recv().ok(),
+        };
+        let Some((prog, tag)) = next else {
+            // Nothing new: finish what is in flight.
+            if let Some((t, f)) = issued.take() {
+                finish_one(s, t, f);
+            }
+            continue;
+        };
+        let overlap = s.overlap.load(Ordering::Relaxed);
+        // Without overlap, or when the new program reads what the previous
+        // one writes, the previous one finishes first.
+        if let Some((t, f)) = issued.take_if(|(_, f)| !overlap || depends_on(&prog, f)) {
+            finish_one(s, t, f);
+        }
+        let new = guarded(
+            s,
+            tag,
+            || issue(&s.gpu, &mut s.state(), &prog, tag),
+            InFlight::Done,
+        );
+        // Every command of the new program has been submitted: its pooled
+        // buffers can go back (queue order keeps reuse safe).
+        s.gpu.recycle();
+        if let Some((t, f)) = issued.take() {
+            finish_one(s, t, f);
+        }
+        issued = Some((tag, new));
+    }
+}
+
+fn finish_one(s: &Shared, tag: Tag, f: InFlight) {
+    let c = guarded(s, tag, || finish(&s.gpu, &mut s.state(), f), |c| c);
+    s.done().push_back(c);
 }
 
 impl Shared {
@@ -81,7 +143,7 @@ impl Shared {
 pub struct WgpuBackend {
     shared: Arc<Shared>,
     queue_depth: usize,
-    jobs: Option<SyncSender<(Box<ChannelProgram>, Tag)>>,
+    jobs: Option<SyncSender<Job>>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -92,7 +154,11 @@ impl WgpuBackend {
     /// Opens `adapter` with the [`CopyingStrategy`] and the default queue
     /// depth.
     pub fn new(adapter: &wgpu::Adapter) -> Result<Self, Error> {
-        Self::with_strategy(adapter, Box::new(CopyingStrategy), DEFAULT_QUEUE_DEPTH)
+        Self::with_strategy(
+            adapter,
+            Box::new(CopyingStrategy::new()),
+            DEFAULT_QUEUE_DEPTH,
+        )
     }
 
     /// Opens `adapter` with a buffer strategy and queue depth.
@@ -108,24 +174,13 @@ impl WgpuBackend {
             done: Mutex::new(VecDeque::new()),
             in_flight: AtomicUsize::new(0),
             health: AtomicU8::new(ONLINE),
+            overlap: AtomicBool::new(true),
         });
-        let (tx, rx) = mpsc::sync_channel::<(Box<ChannelProgram>, Tag)>(queue_depth.max(1));
+        let (tx, rx) = mpsc::sync_channel::<Job>(queue_depth.max(1));
         let worker_shared = Arc::clone(&shared);
         let worker = std::thread::Builder::new()
             .name("bytelanes-wgpu".into())
-            .spawn(move || {
-                for (prog, tag) in rx {
-                    let s = &worker_shared;
-                    let c = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        execute(&s.gpu, &mut s.state(), &prog, tag)
-                    }))
-                    .unwrap_or_else(|_| {
-                        s.health.store(DEGRADED, Ordering::Relaxed);
-                        Completion::error(tag, NO_INDEX, Status::DeviceError, 0)
-                    });
-                    s.done().push_back(c);
-                }
-            })
+            .spawn(move || work(&worker_shared, &rx))
             .map_err(|e| Error::Device(format!("worker thread: {e}")))?;
         Ok(WgpuBackend {
             shared,
@@ -143,6 +198,19 @@ impl WgpuBackend {
     /// The buffer strategy in use.
     pub fn strategy_name(&self) -> &'static str {
         self.shared.gpu.strategy_name()
+    }
+
+    /// Whether the worker overlaps consecutive programs (on by default).
+    ///
+    /// With overlap, the worker submits the next queued program's GPU work
+    /// before it waits for the previous program's result, so uploads,
+    /// kernels and readbacks of neighbouring programs run back to back
+    /// instead of the GPU idling while the host copies. Completions still
+    /// arrive in submission order, and a program that reads host bytes the
+    /// previous program writes waits for it, so results are the same either
+    /// way. A lone program runs exactly as without overlap.
+    pub fn set_overlap(&self, on: bool) {
+        self.shared.overlap.store(on, Ordering::Relaxed);
     }
 
     /// Drops every host buffer, device buffer and key, as if the backend
@@ -227,7 +295,7 @@ impl Buffers for WgpuBackend {
         if !gpu.fits(len) {
             return Err(Status::DeviceError);
         }
-        let b = gpu.zeroed("vram", len);
+        let b = gpu.fresh_zeroed("vram", len);
         self.shared
             .state()
             .vram
@@ -255,9 +323,61 @@ fn device_error(_: String) -> Fail {
     Fail(Status::DeviceError, 0)
 }
 
-fn execute(gpu: &Gpu, st: &mut State, prog: &ChannelProgram, tag: Tag) -> Completion {
+/// A program whose GPU work has all been submitted and whose result is
+/// being read back, or one that already has its completion (an error).
+enum InFlight {
+    Done(Completion),
+    Reading {
+        tag: Tag,
+        last: u16,
+        len: u64,
+        /// Where the result goes on the host, if anywhere.
+        host_dst: Option<BufRange>,
+        pending: PendingDownload,
+    },
+}
+
+impl InFlight {
+    /// The host range this program will write when it finishes.
+    fn host_dst(&self) -> Option<BufRange> {
+        match self {
+            InFlight::Reading { host_dst, .. } => *host_dst,
+            InFlight::Done(_) => None,
+        }
+    }
+}
+
+/// Every host range `prog` reads from (the sources of commands that are not
+/// fed by the previous command).
+fn host_sources(prog: &ChannelProgram) -> Vec<BufRange> {
+    let cmds = prog.commands();
+    cmds.iter()
+        .enumerate()
+        .filter(|(i, _)| *i == 0 || !cmds[i - 1].flags().contains(Flags::CHAIN))
+        .filter_map(|(_, c)| match c.check() {
+            Ok((_, ExtentRef::Host(r), _)) => Some(r),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `prog` reads host bytes that `before` has yet to write. Such a
+/// program must wait until `before` has finished.
+fn depends_on(prog: &ChannelProgram, before: &InFlight) -> bool {
+    let Some(w) = before.host_dst() else {
+        return false;
+    };
+    host_sources(prog)
+        .iter()
+        .any(|r| r.buf == w.buf && r.offset < w.offset + w.len && w.offset < r.offset + r.len)
+}
+
+/// Checks and submits all of `prog`'s GPU work and starts reading the
+/// result back, without waiting for the GPU (a Filter waits for its own
+/// match count).
+fn issue(gpu: &Gpu, st: &mut State, prog: &ChannelProgram, tag: Tag) -> InFlight {
     if let Err(e) = prog.validate() {
-        return Completion::error(tag, e.index, e.status, 0);
+        return InFlight::Done(Completion::error(tag, e.index, e.status, 0));
     }
     let cmds = prog.commands();
     let mut prev: Option<Data> = None;
@@ -267,23 +387,80 @@ fn execute(gpu: &Gpu, st: &mut State, prog: &ChannelProgram, tag: Tag) -> Comple
         let input = if fed { prev.take() } else { None };
         match run_cmd(gpu, st, cmd, input) {
             Ok(out) => prev = Some(out),
-            Err(Fail(status, bytes)) => return Completion::error(tag, idx, status, bytes),
+            Err(Fail(status, bytes)) => {
+                return InFlight::Done(Completion::error(tag, idx, status, bytes));
+            }
         }
     }
     let last = u16::try_from(cmds.len() - 1).unwrap_or(NO_INDEX);
     // The program validated, so it has at least one command and `prev` is set.
     let Some(result) = prev else {
-        return Completion::error(tag, NO_INDEX, Status::DeviceError, 0);
+        return InFlight::Done(Completion::error(tag, NO_INDEX, Status::DeviceError, 0));
     };
-    // The result's CRC is computed on the GPU.
+    // The result's CRC is computed on the GPU. A host destination (only the
+    // last command can have one) is read back together with the CRC, with
+    // one wait, straight into the host buffer.
     let crc = gpu.crc(&result);
-    match gpu.download(&crc, 0, 4) {
-        Ok(b) => Completion::ok(
+    let crc_part = ReadRange {
+        buffer: &crc,
+        offset: 0,
+        len: 4,
+    };
+    let host_dst = match cmds[cmds.len() - 1].check() {
+        Ok((_, _, ExtentRef::Host(r))) => Some(BufRange::new(r.buf, r.offset, result.len)),
+        _ => None,
+    };
+    let begun = match host_dst {
+        Some(_) => gpu.begin_download(&[
+            ReadRange {
+                buffer: &result.buf,
+                offset: result.off,
+                len: result.len,
+            },
+            crc_part,
+        ]),
+        None => gpu.begin_download(&[crc_part]),
+    };
+    match begun {
+        Ok(pending) => InFlight::Reading {
             tag,
             last,
-            result.len as u32,
-            u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-        ),
+            len: result.len,
+            host_dst,
+            pending,
+        },
+        Err(_) => InFlight::Done(Completion::error(tag, last, Status::DeviceError, 0)),
+    }
+}
+
+/// Waits for an issued program's readback and writes its result into host
+/// memory.
+fn finish(gpu: &Gpu, st: &mut State, f: InFlight) -> Completion {
+    let (tag, last, len, host_dst, pending) = match f {
+        InFlight::Done(c) => return c,
+        InFlight::Reading {
+            tag,
+            last,
+            len,
+            host_dst,
+            pending,
+        } => (tag, last, len, host_dst, pending),
+    };
+    let mut crc_bytes = [0u8; 4];
+    let read = match host_dst {
+        Some(r) => match st.host.get_mut(&r.buf) {
+            Some(host) => {
+                let start = r.offset as usize;
+                let dst = &mut host[start..start + len as usize];
+                gpu.finish_download(pending, &mut [dst, &mut crc_bytes])
+            }
+            // The buffer went away (clear) while the program was in flight.
+            None => return Completion::error(tag, last, Status::UnknownBuffer, 0),
+        },
+        None => gpu.finish_download(pending, &mut [&mut crc_bytes]),
+    };
+    match read {
+        Ok(()) => Completion::ok(tag, last, len as u32, u32::from_le_bytes(crc_bytes)),
         Err(_) => Completion::error(tag, last, Status::DeviceError, 0),
     }
 }
@@ -454,14 +631,9 @@ fn run_cmd(gpu: &Gpu, st: &mut State, cmd: &ChannelCmd, fed: Option<Data>) -> Re
         return Err(Fail(Status::DstTooSmall, out_len));
     }
     match dst {
-        ExtentRef::Host(r) => {
-            let bytes = gpu
-                .download(&out.buf, out.off, out.len)
-                .map_err(device_error)?;
-            let host = st.host.get_mut(&r.buf).ok_or(Status::UnknownBuffer)?;
-            let start = r.offset as usize;
-            host[start..start + bytes.len()].copy_from_slice(&bytes);
-        }
+        // Validation puts a host destination only on the last command;
+        // `execute` reads it back together with the result's CRC.
+        ExtentRef::Host(_) => {}
         _ => {
             let v = st.vram.get(&dst_range.buf).ok_or(Status::UnknownBuffer)?;
             gpu.place(&out, &v.buf, dst_range.offset);
